@@ -98,8 +98,8 @@ class SettingsPanel(QWidget):
         layout.addLayout(form)
 
         # Toggle transparency note
-        hint = QLabel("💡 Tip: Drag window titlebar to move. "
-                      "Use arrow keys or click to select cells. Press 1-9 to enter, 0/Del to clear.")
+        hint = QLabel("💡 Tip: Drag to select several cells — their sum appears next to the "
+                      "selection. Arrow keys move the cursor, 1-9 fills the selection, 0/Del clears.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: gray; font-size: 10px;")
         layout.addWidget(hint)

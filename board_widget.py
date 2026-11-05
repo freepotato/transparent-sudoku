@@ -21,22 +21,27 @@ class KillerSudokuBoard(QWidget):
         super().__init__(parent)
         self._puzzle: Optional[KillerSudokuPuzzle] = None
         self._user_values: List[List[int]] = []  # user-entered values (0=empty)
-        self._selected_cell: Optional[Tuple[int, int]] = None
+        self._selected_cells: List[Tuple[int, int]] = []  # drag-selectable cells
+        self._anchor_cell: Optional[Tuple[int, int]] = None  # cursor cell
+        self._dragging = False
         self._fixed_mask: List[List[bool]] = []  # True for given cells
 
         # Visual settings
         self._bg_color = QColor(0, 0, 0, 0)  # fully transparent bg
         self._grid_color = QColor(80, 80, 80, 200)
         self._cage_border_color = QColor(40, 40, 40, 255)
-        self._cage_border_width = 3.0
-        self._thick_grid_width = 2.0
-        self._thin_grid_width = 1.0
+        self._cage_border_width = 1.5
+        self._thick_grid_width = 1.5
+        self._thin_grid_width = 0.8
         self._number_color = QColor(20, 20, 20, 255)
         self._fixed_number_color = QColor(20, 20, 20, 255)
         self._cage_sum_color = QColor(80, 80, 80, 255)
+        self._cage_done_color = QColor(40, 160, 80, 255)
+        self._cage_error_color = QColor(200, 60, 60, 255)
         self._selected_color = QColor(100, 150, 255, 100)
         self._highlight_color = QColor(200, 220, 255, 60)
         self._error_color = QColor(200, 50, 50, 180)
+        self._same_digit_color = QColor(255, 200, 80, 75)
         self._cell_size = 40  # base cell size
         self._cage_sum_font_scale = 0.35
         self._number_font_scale = 0.55
@@ -56,7 +61,8 @@ class KillerSudokuBoard(QWidget):
         size = puzzle.size
         self._user_values = [[0] * size for _ in range(size)]
         self._fixed_mask = [[puzzle.cells[r][c] != 0 for c in range(size)] for r in range(size)]
-        self._selected_cell = None
+        self._selected_cells = []
+        self._anchor_cell = None
         self.update()
 
     def set_background_color(self, color: QColor):
@@ -140,17 +146,25 @@ class KillerSudokuBoard(QWidget):
         painter.fillRect(rect, self._bg_color)
 
         # Draw selection highlight first (so grid/cages appear over it)
-        if self._selected_cell is not None:
-            sr, sc = self._selected_cell
-            sel_rect = QRectF(offset_x + sc * cell, offset_y + sr * cell, cell, cell)
+        for r, c in self._selected_cells:
+            sel_rect = QRectF(offset_x + c * cell, offset_y + r * cell, cell, cell)
             painter.fillRect(sel_rect, self._selected_color)
 
-        # Draw cage highlights (same cage as selected)
-        if self._selected_cell is not None:
-            sel_cage = self._puzzle.cage_grid[self._selected_cell[0]][self._selected_cell[1]]
+        # Highlight every cell that holds the same digit as the cursor cell
+        anchor_value = self.user_value(*self._anchor_cell) if self._anchor_cell else 0
+        if anchor_value:
             for r in range(n):
                 for c in range(n):
-                    if self._puzzle.cage_grid[r][c] == sel_cage and (r, c) != self._selected_cell:
+                    if self.user_value(r, c) == anchor_value and (r, c) not in self._selected_cells:
+                        cr = QRectF(offset_x + c * cell, offset_y + r * cell, cell, cell)
+                        painter.fillRect(cr, self._same_digit_color)
+
+        # Draw cage highlights (same cage as the cursor cell)
+        if self._anchor_cell is not None:
+            sel_cage = self._puzzle.cage_grid[self._anchor_cell[0]][self._anchor_cell[1]]
+            for r in range(n):
+                for c in range(n):
+                    if self._puzzle.cage_grid[r][c] == sel_cage and (r, c) != self._anchor_cell:
                         cr = QRectF(offset_x + c * cell, offset_y + r * cell, cell, cell)
                         painter.fillRect(cr, self._highlight_color)
 
@@ -184,6 +198,64 @@ class KillerSudokuBoard(QWidget):
 
         # Draw numbers
         self._draw_numbers(painter, offset_x, offset_y, cell)
+
+        # Draw the running total beside the current selection
+        self._draw_selection_sum(painter, offset_x, offset_y, cell)
+
+    def _selection_stats(self) -> Tuple[int, int, int]:
+        """Return (sum of filled cells, filled count, selected count)."""
+        values = [self.user_value(r, c) for r, c in self._selected_cells]
+        filled = [v for v in values if v]
+        return sum(filled), len(filled), len(values)
+
+    def _draw_selection_sum(self, painter, ox, oy, cell):
+        """Draw a small pill with the selection total next to the selection."""
+        if self._puzzle is None or len(self._selected_cells) < 2:
+            return
+
+        total, filled, count = self._selection_stats()
+        text = f"Σ {total}  ({filled}/{count})"
+
+        font = QFont()
+        font.setPointSizeF(max(9.0, cell * 0.28))
+        painter.setFont(font)
+        metrics = QFontMetrics(font)
+
+        pad_x, pad_y = 6.0, 3.0
+        box_w = metrics.horizontalAdvance(text) + pad_x * 2
+        box_h = metrics.height() + pad_y * 2
+
+        cols = [c for _, c in self._selected_cells]
+        rows = [r for r, _ in self._selected_cells]
+        left = ox + min(cols) * cell
+        right = ox + (max(cols) + 1) * cell
+        top = oy + min(rows) * cell
+        bottom = oy + (max(rows) + 1) * cell
+
+        board_left = ox
+        board_right = ox + self._puzzle.size * cell
+
+        # Prefer the right side of the selection, fall back to the left
+        if right + 4 + box_w <= board_right:
+            box_x = right + 4
+        elif left - 4 - box_w >= board_left:
+            box_x = left - 4 - box_w
+        else:
+            box_x = max(board_left, board_right - box_w)
+
+        box_y = top - box_h - 3
+        if box_y < oy:
+            box_y = bottom + 3
+        if box_y + box_h > oy + self._puzzle.size * cell:
+            box_y = max(oy, top + 3)
+
+        pill = QRectF(box_x, box_y, box_w, box_h)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(25, 25, 25, 205))
+        painter.drawRoundedRect(pill, 4, 4)
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QColor(255, 255, 255, 240))
+        painter.drawText(pill, Qt.AlignCenter, text)
 
     def _draw_conflicts(self, painter, ox, oy, cell):
         """Draw red background on conflicting cells."""
@@ -318,6 +390,18 @@ class KillerSudokuBoard(QWidget):
 
                 fm = QFontMetrics(font)
                 sum_text = str(cage.sum_value)
+
+                # Colour the sum when the cage is complete / over target
+                values = [self.user_value(r, c) for r, c in cage.cells]
+                filled = [v for v in values if v]
+                current = sum(filled)
+                if len(filled) == len(cage.cells) and current == cage.sum_value:
+                    painter.setPen(self._cage_done_color)
+                elif current > cage.sum_value:
+                    painter.setPen(self._cage_error_color)
+                else:
+                    painter.setPen(self._cage_sum_color)
+
                 painter.drawText(QPointF(tx, ty), sum_text)
 
     def _draw_numbers(self, painter, ox, oy, cell):
@@ -378,47 +462,69 @@ class KillerSudokuBoard(QWidget):
         return None
 
     def mousePressEvent(self, event):
+        if event.button() != Qt.LeftButton:
+            super().mousePressEvent(event)
+            return
+
         cell = self._cell_from_pos(event.position())
         if cell is not None:
-            self._selected_cell = cell
+            self._selected_cells = [cell]
+            self._anchor_cell = cell
+            self._dragging = True
             self.setFocus()
             self.cell_clicked.emit(cell[0], cell[1])
-            self.update()
         else:
-            self._selected_cell = None
-            self.update()
+            self._selected_cells = []
+            self._anchor_cell = None
+        self.update()
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._dragging and event.buttons() & Qt.LeftButton:
+            cell = self._cell_from_pos(event.position())
+            if cell is not None and cell not in self._selected_cells:
+                self._selected_cells.append(cell)
+                self._anchor_cell = cell
+                self.cell_clicked.emit(cell[0], cell[1])
+                self.update()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._dragging = False
+        super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event):
-        if self._selected_cell is None or self._puzzle is None:
+        if self._anchor_cell is None or self._puzzle is None:
             super().keyPressEvent(event)
             return
 
-        row, col = self._selected_cell
+        row, col = self._anchor_cell
         key = event.key()
 
-        # Number keys 1-9
+        # Number keys 1-9 (top row and keypad) fill every selected cell
+        value = 0
         if Qt.Key_1 <= key <= Qt.Key_9:
             value = key - Qt.Key_0
-            self.set_user_value(row, col, value)
-            self.value_entered.emit(row, col, value)
-            event.accept()
-            return
-
-        # Keypad numbers
-        if Qt.Key_0 <= key <= Qt.Key_9:
+        elif Qt.Key_0 <= key <= Qt.Key_9:
             value = key - Qt.Key_0
-            self.set_user_value(row, col, value)
-            self.value_entered.emit(row, col, value)
+
+        if value:
+            for r, c in self._selected_cells or [(row, col)]:
+                self.set_user_value(r, c, value)
+                self.value_entered.emit(r, c, value)
             event.accept()
             return
 
-        # Delete/Backspace/Clear
+        # Delete/Backspace/Clear (also plain 0 on the number row)
         if key in (Qt.Key_Delete, Qt.Key_Backspace, Qt.Key_C, Qt.Key_0):
             if key == Qt.Key_C and event.modifiers() & Qt.ControlModifier:
                 super().keyPressEvent(event)
                 return
-            self.set_user_value(row, col, 0)
-            self.value_entered.emit(row, col, 0)
+            for r, c in self._selected_cells or [(row, col)]:
+                self.set_user_value(r, c, 0)
+                self.value_entered.emit(r, c, 0)
             event.accept()
             return
 
@@ -438,7 +544,8 @@ class KillerSudokuBoard(QWidget):
             n = self._puzzle.size
             new_r = (row + row_move) % n
             new_c = (col + col_move) % n
-            self._selected_cell = (new_r, new_c)
+            self._anchor_cell = (new_r, new_c)
+            self._selected_cells = [self._anchor_cell]
             self.cell_clicked.emit(new_r, new_c)
             self.update()
             event.accept()
