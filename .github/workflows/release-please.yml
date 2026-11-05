@@ -17,3 +17,4 @@ jobs:
         with:
           release-type: python
           include-component-in-tag: false
+          skip-github-pull-request: true
