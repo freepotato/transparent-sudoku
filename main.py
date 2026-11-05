@@ -319,10 +319,14 @@ class TransparentSudokuWindow(QMainWindow):
         self._status("Loading today's puzzle...")
         QApplication.processEvents()
         try:
-            latest_id = self._fetcher.fetch_latest_puzzle_id()
-            self._load_puzzle_by_id_int(latest_id)
+            puzzle_ids = self._fetcher.fetch_today_puzzle_ids()
         except Exception as e:
-            self._error(f"Failed to load today's puzzle: {e}")
+            self._error(f"Today's puzzle failed: {e}")
+            return
+        if not puzzle_ids:
+            self._error("No puzzle published for today yet")
+            return
+        self._load_puzzle_by_id_int(puzzle_ids[0])
 
     def _load_puzzle_by_id(self):
         text = self.puzzle_id_input.text().strip()
@@ -344,9 +348,13 @@ class TransparentSudokuWindow(QMainWindow):
             self.title_label.setText(
                 f"🎯 #{puzzle.puzzle_id}  {date_str}  Difficulty {puzzle.difficulty}/10 {diff}"
             )
-            self._status(f"Loaded puzzle #{puzzle_id} ({puzzle.date})")
+            self.title_label.setToolTip(
+                f"Loaded puzzle #{puzzle_id} ({puzzle.date}), "
+                f"{len(puzzle.cages)} cages"
+            )
+            print(f"[Status] Loaded puzzle #{puzzle_id} ({puzzle.date})")
         except Exception as e:
-            self._error(f"Failed to load puzzle #{puzzle_id}: {e}")
+            self._error(f"Puzzle #{puzzle_id} failed: {e}")
 
     def _clear_board(self):
         if self._puzzle:
@@ -402,14 +410,17 @@ class TransparentSudokuWindow(QMainWindow):
         pass  # Board already handles visual feedback
 
     def _status(self, msg: str):
+        """Show progress in the title bar so failures are never silent."""
+        self.title_label.setText(f"⏳ {msg}")
         self.title_label.setToolTip(msg)
-        # Also print to console for debugging
+        QApplication.processEvents()
         print(f"[Status] {msg}")
 
     def _error(self, msg: str):
-        print(f"[Error] {msg}")
+        """Show the error in the title bar instead of hiding it in the console."""
+        self.title_label.setText(f"⚠ {msg}")
         self.title_label.setToolTip(msg)
-        # Don't show modal error in case app is supposed to be invisible
+        print(f"[Error] {msg}")
 
     def closeEvent(self, event):
         """Minimize to tray instead of closing."""

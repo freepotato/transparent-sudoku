@@ -1,6 +1,7 @@
 """Fetch and decode Killer Sudoku puzzles from dailykillersudoku.com."""
 
 import base64
+import datetime
 import json
 import re
 from dataclasses import dataclass, field
@@ -10,7 +11,7 @@ import requests
 
 
 DKS_PUZZLE_URL = "https://www.dailykillersudoku.com/puzzle/{puzzle_id}"
-DKS_HOME_URL = "https://www.dailykillersudoku.com/"
+DKS_BY_DATE_URL = "https://www.dailykillersudoku.com/puzzles/by_date"
 
 
 @dataclass
@@ -61,20 +62,41 @@ class DKSFetcher:
         resp.raise_for_status()
         return self._parse_puzzle_page(resp.text)
 
-    def fetch_latest_puzzle_id(self) -> int:
-        """Fetch the latest (today's) puzzle ID from the homepage."""
-        resp = self.session.get(DKS_HOME_URL, timeout=15)
-        resp.raise_for_status()
-        # The homepage contains links like href="/puzzle/12345" for each daily puzzle
-        matches = re.findall(r'href="/puzzle/(\d+)"', resp.text)
-        if not matches:
-            raise ValueError("Could not find puzzle links on homepage")
-        return max(int(m) for m in matches)
+    def fetch_puzzle_ids_for_date(self, date: datetime.date) -> List[int]:
+        """Return the standard Killer Sudoku puzzle IDs published on a date.
 
-    def fetch_today_puzzle(self) -> KillerSudokuPuzzle:
-        """Fetch today's puzzle."""
-        latest_id = self.fetch_latest_puzzle_id()
-        return self.fetch_puzzle(latest_id)
+        The site renders the daily list through the ``/puzzles/by_date`` endpoint.
+        Greater-Than Killer puzzles are listed after the ``#greaterThanPuzzles``
+        heading and are intentionally skipped.
+        """
+        resp = self.session.get(
+            DKS_BY_DATE_URL,
+            params={"date": date.isoformat()},
+            timeout=15,
+        )
+        resp.raise_for_status()
+
+        html = resp.text
+        cutoff = html.find('id="greaterThanPuzzles"')
+        if cutoff != -1:
+            html = html[:cutoff]
+
+        ids = [int(m) for m in re.findall(r'class="puzzle-number">(\d+)<', html)]
+        if not ids:
+            # Fall back to any linked puzzle that is not in the Greater-Than section
+            ids = [int(m) for m in re.findall(r"/puzzle/(\d+)", html)]
+        return list(dict.fromkeys(ids))
+
+    def fetch_today_puzzle_ids(self, days_back: int = 1) -> List[int]:
+        """Return today's puzzle IDs, falling back a few days for time zone lag."""
+        today = datetime.date.today()
+        for offset in range(days_back + 1):
+            ids = self.fetch_puzzle_ids_for_date(today - datetime.timedelta(days=offset))
+            if ids:
+                return ids
+        raise ValueError(
+            "No puzzle found for today. The site may not have published it yet."
+        )
 
     def _parse_puzzle_page(self, html: str) -> KillerSudokuPuzzle:
         """Extract puzzle data from the page HTML."""
