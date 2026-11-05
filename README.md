@@ -173,7 +173,13 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 - 推送到 `main` 后，GitHub Actions 会自动创建/更新 release PR；
 - 合并 release PR 后自动打 tag（如 `v0.1.0`）并生成 Release 说明。
 
-仓库需要开启：**Settings → Actions → General → Workflow permissions → Read and write permissions**。
+仓库需要一次性开启两项设置（**Settings → Actions → General**）：
+
+1. **Workflow permissions** 选择 **Read and write permissions**；
+2. 勾选 **Allow GitHub Actions to create and approve pull requests**
+   （否则 release-please 会报 *GitHub Actions is not permitted to create or approve pull requests*）。
+
+开启后，在 **Actions → Release Please → Re-run all jobs** 重新运行即可生成 release PR。
 
 ---
 
