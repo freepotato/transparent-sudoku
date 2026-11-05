@@ -28,14 +28,11 @@ class KillerSudokuBoard(QWidget):
 
         # Visual settings
         self._bg_color = QColor(0, 0, 0, 0)  # fully transparent bg
-        self._grid_color = QColor(80, 80, 80, 200)
-        self._cage_border_color = QColor(40, 40, 40, 255)
-        self._cage_border_width = 1.5
-        self._thick_grid_width = 1.5
-        self._thin_grid_width = 0.8
+        self._cage_border_color = QColor(165, 165, 165, 190)
+        self._cage_border_width = 1.0
         self._number_color = QColor(20, 20, 20, 255)
         self._fixed_number_color = QColor(20, 20, 20, 255)
-        self._cage_sum_color = QColor(80, 80, 80, 255)
+        self._cage_sum_color = QColor(160, 160, 160, 210)
         self._cage_done_color = QColor(40, 160, 80, 255)
         self._cage_error_color = QColor(200, 60, 60, 255)
         self._selected_color = QColor(100, 150, 255, 100)
@@ -43,7 +40,7 @@ class KillerSudokuBoard(QWidget):
         self._error_color = QColor(200, 50, 50, 180)
         self._same_digit_color = QColor(255, 200, 80, 75)
         self._cell_size = 40  # base cell size
-        self._cage_sum_font_scale = 0.35
+        self._cage_sum_font_scale = 0.22
         self._number_font_scale = 0.55
         self._fixed_bold = True
 
@@ -67,10 +64,6 @@ class KillerSudokuBoard(QWidget):
 
     def set_background_color(self, color: QColor):
         self._bg_color = color
-        self.update()
-
-    def set_grid_color(self, color: QColor):
-        self._grid_color = color
         self.update()
 
     def set_cage_border_color(self, color: QColor):
@@ -171,26 +164,7 @@ class KillerSudokuBoard(QWidget):
         # Draw cell backgrounds for conflicting cells
         self._draw_conflicts(painter, offset_x, offset_y, cell)
 
-        # Draw thin grid lines
-        painter.setPen(QPen(self._grid_color, self._thin_grid_width))
-        for i in range(n + 1):
-            x = offset_x + i * cell
-            y = offset_y + i * cell
-            painter.drawLine(QPointF(x, offset_y), QPointF(x, offset_y + n * cell))
-            painter.drawLine(QPointF(offset_x, y), QPointF(offset_x + n * cell, y))
-
-        # Draw thick nonet lines
-        painter.setPen(QPen(self._grid_color, self._thick_grid_width))
-        nr = self._puzzle.num_rows_nonet
-        nc = self._puzzle.num_cols_nonet
-        for i in range(0, n + 1, nc):
-            x = offset_x + i * cell
-            painter.drawLine(QPointF(x, offset_y), QPointF(x, offset_y + n * cell))
-        for j in range(0, n + 1, nr):
-            y = offset_y + j * cell
-            painter.drawLine(QPointF(offset_x, y), QPointF(offset_x + n * cell, y))
-
-        # Draw cage borders (thick lines on edges)
+        # Draw cage borders (the only visible lines on the board)
         self._draw_cage_borders(painter, offset_x, offset_y, cell)
 
         # Draw cage sums
@@ -202,22 +176,32 @@ class KillerSudokuBoard(QWidget):
         # Draw the running total beside the current selection
         self._draw_selection_sum(painter, offset_x, offset_y, cell)
 
-    def _selection_stats(self) -> Tuple[int, int, int]:
-        """Return (sum of filled cells, filled count, selected count)."""
-        values = [self.user_value(r, c) for r, c in self._selected_cells]
-        filled = [v for v in values if v]
-        return sum(filled), len(filled), len(values)
+    def _complete_cages(self):
+        """Return the cages fully covered by the selection, or [] if it is partial."""
+        if self._puzzle is None or not self._selected_cells:
+            return []
+        selected = set(self._selected_cells)
+        cages = []
+        for cage_id in {self._puzzle.cage_grid[r][c] for r, c in self._selected_cells}:
+            cage = self._puzzle.cages[cage_id]
+            if not set(cage.cells).issubset(selected):
+                return []
+            cages.append(cage)
+        if sum(len(c.cells) for c in cages) != len(selected):
+            return []
+        return sorted(cages, key=lambda c: c.index)
 
     def _draw_selection_sum(self, painter, ox, oy, cell):
-        """Draw a small pill with the selection total next to the selection."""
-        if self._puzzle is None or len(self._selected_cells) < 2:
+        """Show the sum of cage totals when the selection covers whole cages."""
+        cages = self._complete_cages()
+        if not cages:
             return
 
-        total, filled, count = self._selection_stats()
-        text = f"Σ {total}  ({filled}/{count})"
+        total = sum(c.sum_value for c in cages)
+        text = f"Σ {total}" if len(cages) == 1 else f"Σ {total} · {len(cages)} cages"
 
         font = QFont()
-        font.setPointSizeF(max(9.0, cell * 0.28))
+        font.setPointSizeF(max(8.0, cell * 0.22))
         painter.setFont(font)
         metrics = QFontMetrics(font)
 
@@ -251,10 +235,10 @@ class KillerSudokuBoard(QWidget):
 
         pill = QRectF(box_x, box_y, box_w, box_h)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(25, 25, 25, 205))
+        painter.setBrush(QColor(70, 70, 70, 150))
         painter.drawRoundedRect(pill, 4, 4)
         painter.setBrush(Qt.NoBrush)
-        painter.setPen(QColor(255, 255, 255, 240))
+        painter.setPen(QColor(245, 245, 245, 210))
         painter.drawText(pill, Qt.AlignCenter, text)
 
     def _draw_conflicts(self, painter, ox, oy, cell):
@@ -360,7 +344,7 @@ class KillerSudokuBoard(QWidget):
         if self._puzzle is None:
             return
         n = self._puzzle.size
-        sum_font_size = max(6, int(cell * self._cage_sum_font_scale))
+        sum_font_size = max(5, int(cell * self._cage_sum_font_scale))
         font = QFont()
         font.setPointSizeF(sum_font_size)
         painter.setFont(font)

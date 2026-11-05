@@ -4,7 +4,9 @@ import sys
 from typing import Optional
 
 from PySide6.QtCore import Qt, QPoint, QSize, Signal
-from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence, QPainter, QCursor, QPixmap
+from PySide6.QtGui import (
+    QAction, QColor, QIcon, QKeySequence, QPainter, QCursor, QPixmap, QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QColorDialog,
@@ -59,7 +61,7 @@ class SettingsPanel(QWidget):
         row1.addWidget(QLabel("Opacity:"))
         self.opacity_slider = QSlider(Qt.Horizontal)
         self.opacity_slider.setRange(10, 100)
-        self.opacity_slider.setValue(95)
+        self.opacity_slider.setValue(85)
         self.opacity_slider.setToolTip("Window opacity")
         self.opacity_slider.valueChanged.connect(self.transparency_changed.emit)
         row1.addWidget(self.opacity_slider, 1)
@@ -80,26 +82,24 @@ class SettingsPanel(QWidget):
         form.setContentsMargins(0, 4, 0, 4)
 
         self.bg_color_btn = QPushButton("Pick...")
-        self.grid_color_btn = QPushButton("Pick...")
         self.cage_color_btn = QPushButton("Pick...")
         self.number_color_btn = QPushButton("Pick...")
         self.cage_sum_color_btn = QPushButton("Pick...")
 
-        for btn in [self.bg_color_btn, self.grid_color_btn, self.cage_color_btn,
+        for btn in [self.bg_color_btn, self.cage_color_btn,
                      self.number_color_btn, self.cage_sum_color_btn]:
             btn.setFixedWidth(60)
             btn.clicked.connect(lambda checked, b=btn: self._pick_color(b))
 
         form.addRow("BG Color:", self.bg_color_btn)
-        form.addRow("Grid:", self.grid_color_btn)
-        form.addRow("Cage:", self.cage_color_btn)
+        form.addRow("Cage Outline:", self.cage_color_btn)
         form.addRow("Numbers:", self.number_color_btn)
         form.addRow("Cage Sums:", self.cage_sum_color_btn)
         layout.addLayout(form)
 
         # Toggle transparency note
-        hint = QLabel("💡 Tip: Drag to select several cells — their sum appears next to the "
-                      "selection. Arrow keys move the cursor, 1-9 fills the selection, 0/Del clears.")
+        hint = QLabel("💡 Drag across whole cages to see their total (Σ). "
+                      "1-9 fills the selection, 0/Del clears. Ctrl+H hides the window.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: gray; font-size: 10px;")
         layout.addWidget(hint)
@@ -126,18 +126,16 @@ class SettingsPanel(QWidget):
     def _default_color(self, btn):
         if btn is self.bg_color_btn:
             return QColor(255, 255, 255, 100)
-        elif btn is self.grid_color_btn:
-            return QColor(80, 80, 80, 200)
         elif btn is self.cage_color_btn:
-            return QColor(40, 40, 40, 255)
+            return QColor(165, 165, 165, 190)
         elif btn is self.number_color_btn:
-            return QColor(20, 20, 20, 255)
+            return QColor(60, 60, 60, 225)
         elif btn is self.cage_sum_color_btn:
-            return QColor(80, 80, 80, 200)
+            return QColor(160, 160, 160, 210)
         return QColor(0, 0, 0)
 
     def _update_button_colors(self):
-        for btn in [self.bg_color_btn, self.grid_color_btn, self.cage_color_btn,
+        for btn in [self.bg_color_btn, self.cage_color_btn,
                      self.number_color_btn, self.cage_sum_color_btn]:
             c = self._color_from_button(btn)
             btn.setStyleSheet(
@@ -148,7 +146,6 @@ class SettingsPanel(QWidget):
     def get_colors(self):
         return {
             "bg": self._color_from_button(self.bg_color_btn),
-            "grid": self._color_from_button(self.grid_color_btn),
             "cage": self._color_from_button(self.cage_color_btn),
             "number": self._color_from_button(self.number_color_btn),
             "cage_sum": self._color_from_button(self.cage_sum_color_btn),
@@ -180,7 +177,7 @@ class TransparentSudokuWindow(QMainWindow):
         )
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_ShowWithoutActivating, False)
-        self.setWindowOpacity(0.95)
+        self.setWindowOpacity(0.85)
 
     def _setup_ui(self):
         central = QWidget()
@@ -193,10 +190,10 @@ class TransparentSudokuWindow(QMainWindow):
         title_bar = QHBoxLayout()
         title_bar.setSpacing(4)
 
-        self.title_label = QLabel("🎯 No puzzle loaded")
+        self.title_label = QLabel("")
         self.title_label.setStyleSheet(
-            "font-weight: bold; font-size: 13px; color: #333; background: rgba(255,255,255,120); "
-            "padding: 2px 8px; border-radius: 4px;"
+            "font-size: 10px; color: rgba(120,120,120,170); background: transparent; "
+            "padding: 0px 2px;"
         )
         self.title_label.setCursor(Qt.SizeAllCursor)
         title_bar.addWidget(self.title_label, 1)
@@ -213,7 +210,8 @@ class TransparentSudokuWindow(QMainWindow):
         self.puzzle_id_input.setFixedWidth(55)
         self.puzzle_id_input.setPlaceholderText("872")
         self.puzzle_id_input.setStyleSheet(
-            "border: 1px solid #aaa; padding: 2px 4px; background: rgba(255,255,255,200);"
+            "border: 1px solid rgba(150,150,150,90); padding: 2px 4px; "
+            "background: rgba(255,255,255,35); color: rgba(90,90,90,200);"
         )
         self.puzzle_id_input.returnPressed.connect(self._load_puzzle_by_id)
         title_bar.addWidget(self.puzzle_id_input)
@@ -271,13 +269,13 @@ class TransparentSudokuWindow(QMainWindow):
     def _small_btn_style(self):
         return """
             QPushButton {
-                padding: 2px 6px;
-                font-size: 11px;
-                border: 1px solid #999;
-                border-radius: 3px;
-                background: rgba(255,255,255,180);
+                padding: 1px 5px;
+                font-size: 10px;
+                color: rgba(110,110,110,150);
+                border: none;
+                background: transparent;
             }
-            QPushButton:hover { background: rgba(220,230,255,220); }
+            QPushButton:hover { color: rgba(40,40,40,220); }
         """
 
     def _setup_tray(self):
@@ -304,6 +302,10 @@ class TransparentSudokuWindow(QMainWindow):
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(lambda reason: self._toggle_visible() if reason == self.tray.Trigger else None)
         self.tray.show()
+
+        # Panic key: takes the window off screen immediately
+        shortcut = QShortcut(QKeySequence("Ctrl+H"), self)
+        shortcut.activated.connect(self._toggle_visible)
 
     def _toggle_visible(self):
         if self.isVisible():
@@ -345,12 +347,11 @@ class TransparentSudokuWindow(QMainWindow):
             self.puzzle_id_input.setText(str(puzzle_id))
             date_str = puzzle.date
             diff = "★" * puzzle.difficulty
-            self.title_label.setText(
-                f"🎯 #{puzzle.puzzle_id}  {date_str}  Difficulty {puzzle.difficulty}/10 {diff}"
-            )
+            # Keep the chrome almost invisible: only the puzzle number is shown
+            self.title_label.setText(f"#{puzzle.puzzle_id}")
             self.title_label.setToolTip(
-                f"Loaded puzzle #{puzzle_id} ({puzzle.date}), "
-                f"{len(puzzle.cages)} cages"
+                f"Puzzle #{puzzle_id} · {puzzle.date} · difficulty {puzzle.difficulty}/10 "
+                f"{diff} · {len(puzzle.cages)} cages"
             )
             print(f"[Status] Loaded puzzle #{puzzle_id} ({puzzle.date})")
         except Exception as e:
@@ -366,7 +367,6 @@ class TransparentSudokuWindow(QMainWindow):
     def _apply_colors(self):
         colors = self.settings_panel.get_colors()
         self.board.set_background_color(colors["bg"])
-        self.board.set_grid_color(colors["grid"])
         self.board.set_cage_border_color(colors["cage"])
         self.board.set_number_color(colors["number"])
         self.board.set_cage_sum_color(colors["cage_sum"])
