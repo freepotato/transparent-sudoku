@@ -19,6 +19,9 @@
 - **透明度可调**：10%~100% 整体不透明度
 - **颜色可调**：背景、网格线、Cage 边界、数字、Cage 求和数值均可单独选色（支持 alpha）
 - **格子大小可调**：25~80 px
+- **鼠标拖动多选**：按住左键划过若干格子即可多选，选区旁实时显示 `Σ 总和 (已填/总数)`
+- **同一个数字高亮**：选中某个已填格子时，全盘相同数字会一起标记
+- **Cage 完成提示**：Cage 填满且求和正确时数值变绿，超出目标时变红
 - **完整解题交互**：鼠标选格、键盘输入、方向键移动、冲突高亮
 - **托盘常驻**：隐藏窗口后可从托盘快速恢复或直接切换到当天题目
 
@@ -37,11 +40,9 @@
 
 ## 安装与运行（推荐使用虚拟环境）
 
-在 PowerShell 中执行：
+以下命令均在**项目根目录**（克隆下来的 `transparent-sudoku` 文件夹）中执行：
 
 ```powershell
-cd C:\Users\rfuser\OneDrive\文档\Trae-CN\default\transparent-sudoku
-
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
@@ -53,8 +54,6 @@ python main.py
 这种方式不需要修改 PowerShell 执行策略，也适合做成快捷方式或计划任务：
 
 ```powershell
-cd C:\Users\rfuser\OneDrive\文档\Trae-CN\default\transparent-sudoku
-
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe main.py
@@ -112,16 +111,22 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 | **—** | 隐藏到系统托盘 |
 | **✕** | 退出程序 |
 
-窗口无系统标题栏，**按住窗口任意空白处即可拖动**。鼠标点托盘图标可快速显示/隐藏。
+窗口无系统标题栏，**按住标题栏或空白处即可拖动窗口**。鼠标点托盘图标可快速显示/隐藏。
+
+### 鼠标拖动多选
+
+在棋盘上按住左键并划过若干格子，这些格子会保持高亮，选区右上角会浮出一个
+`Σ 总和 (已填格数/选中格数)` 的小标签；继续划过更多格子时总和会实时更新。
+常用于快速核对某个 Cage 或某一区域内已填数字的合计。单击（不拖动）则回到单格选择。
 
 ### 键盘操作
 
 | 按键 | 作用 |
 | --- | --- |
-| `1`~`9` | 在当前选中的格子里填入数字 |
-| `0` / `Delete` / `Backspace` | 清除当前格子 |
-| 方向键 | 移动选中格子 |
-| 鼠标点击 | 选中格子 |
+| `1`~`9` | 在选中格子中填入数字（多选时会同时填入所有选中格） |
+| `0` / `Delete` / `Backspace` | 清除选中格子的数字 |
+| 方向键 | 移动光标（会退出多选状态） |
+| 鼠标点击 / 拖动 | 选中格子 / 多选格子 |
 
 填入的数字如果与同行、同列、同宫或同 Cage 的数字重复，格子会自动标红提示。
 固定数字（题目给定的）会以粗体显示且不可修改。
