@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.0](https://github.com/freepotato/transparent-sudoku/compare/v0.1.0...v0.2.0) (2026-11-05)
+
+
+### Features
+
+* add drag multi-selection with live sum and lighter board lines ([9a497da](https://github.com/freepotato/transparent-sudoku/commit/9a497daf94d6c524934a5866c84834de224085fe))
+* sum whole-cage selections and fade the on-screen footprint ([2d86699](https://github.com/freepotato/transparent-sudoku/commit/2d86699bcc5b327957bfddbcdb962c45c23f3ada))
+
+
+### Documentation
+
+* describe faint outlines, whole-cage sums and stealth defaults ([b5bf64c](https://github.com/freepotato/transparent-sudoku/commit/b5bf64c1d7574b28ae0e00c4831c6724ff0cd50b))
+* document drag selection and remove local paths from setup steps ([5c61776](https://github.com/freepotato/transparent-sudoku/commit/5c61776cabfe46dbc25cd5bddd0bfd42f94cf979))
+
 ## 0.1.0 (2026-11-05)
 
 
