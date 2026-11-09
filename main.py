@@ -3,7 +3,7 @@
 import sys
 from typing import Optional
 
-from PySide6.QtCore import Qt, QPoint, QSize, Signal
+from PySide6.QtCore import Qt, QPoint, QSize, Signal, QEvent, QObject
 from PySide6.QtGui import (
     QAction, QColor, QIcon, QKeySequence, QPainter, QCursor, QPixmap, QShortcut,
 )
@@ -152,6 +152,28 @@ class SettingsPanel(QWidget):
         }
 
 
+class TitleBarDragFilter(QObject):
+    """Forward left-button press/move on title-bar widgets to window dragging."""
+
+    def __init__(self, window):
+        super().__init__(window)
+        self._win = window
+        self._drag_pos: Optional[QPoint] = None
+
+    def eventFilter(self, obj, event):
+        etype = event.type()
+        if etype == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint() - self._win.frameGeometry().topLeft()
+            return True
+        if etype == QEvent.MouseMove and self._drag_pos is not None \
+                and event.buttons() & Qt.LeftButton:
+            self._win.move(event.globalPosition().toPoint() - self._drag_pos)
+            return True
+        if etype == QEvent.MouseButtonRelease:
+            self._drag_pos = None
+        return False
+
+
 class TransparentSudokuWindow(QMainWindow):
     """Main application window - always-on-top, frameless, transparent."""
 
@@ -192,10 +214,13 @@ class TransparentSudokuWindow(QMainWindow):
 
         self.title_label = QLabel("")
         self.title_label.setStyleSheet(
-            "font-size: 10px; color: rgba(120,120,120,170); background: transparent; "
-            "padding: 0px 2px;"
+            "font-size: 11px; color: rgba(120,120,120,170); background: transparent; "
+            "padding: 2px 4px;"
         )
         self.title_label.setCursor(Qt.SizeAllCursor)
+        self.title_label.setFixedHeight(26)
+        self._title_drag = TitleBarDragFilter(self)
+        self.title_label.installEventFilter(self._title_drag)
         title_bar.addWidget(self.title_label, 1)
 
         # Puzzle controls
@@ -205,7 +230,10 @@ class TransparentSudokuWindow(QMainWindow):
         btn_today.clicked.connect(self._load_today_puzzle)
         title_bar.addWidget(btn_today)
 
-        title_bar.addWidget(QLabel("#"))
+        lbl_hash = QLabel("#")
+        lbl_hash.setCursor(Qt.SizeAllCursor)
+        lbl_hash.installEventFilter(self._title_drag)
+        title_bar.addWidget(lbl_hash)
         self.puzzle_id_input = QLineEdit()
         self.puzzle_id_input.setFixedWidth(55)
         self.puzzle_id_input.setPlaceholderText("872")
