@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/freepotato/transparent-sudoku/compare/v0.2.0...v0.2.1) (2026-11-09)
+
+
+### Bug Fixes
+
+* make the whole title bar draggable ([fac5a05](https://github.com/freepotato/transparent-sudoku/commit/fac5a051a73f15efb524bb47c801c2ca41be96f4))
+* retry 5xx gracefully and fall back to cached puzzle ([933bbcc](https://github.com/freepotato/transparent-sudoku/commit/933bbccd60238392536df0c53b9493d424a27c2a))
+
 ## [0.2.0](https://github.com/freepotato/transparent-sudoku/compare/v0.1.0...v0.2.0) (2026-11-05)
 
 
