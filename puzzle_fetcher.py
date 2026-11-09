@@ -3,15 +3,52 @@
 import base64
 import datetime
 import json
+import logging
 import re
+import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 import requests
 
+logger = logging.getLogger(__name__)
+
 
 DKS_PUZZLE_URL = "https://www.dailykillersudoku.com/puzzle/{puzzle_id}"
 DKS_BY_DATE_URL = "https://www.dailykillersudoku.com/puzzles/by_date"
+
+# Retry policy: up to N attempts with exponential backoff
+_MAX_ATTEMPTS = 4
+_BACKOFF_BASE = 1.5  # seconds
+
+
+def _get_with_retry(session: requests.Session, url: str, params=None, timeout: float = 15) -> requests.Response:
+    """GET with automatic retry on 5xx / connection errors."""
+    last_err: Optional[Exception] = None
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            resp = session.get(url, params=params, timeout=timeout)
+            if resp.status_code < 500:
+                return resp
+            # 5xx: retry after backoff
+            last_err = requests.HTTPError(
+                f"{resp.status_code} from {url}", response=resp
+            )
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            last_err = exc
+
+        if attempt < _MAX_ATTEMPTS:
+            wait = _BACKOFF_BASE * (2 ** (attempt - 1))
+            logger.warning("Request failed (%s), retrying in %.1fs (%d/%d)",
+                           last_err, wait, attempt, _MAX_ATTEMPTS)
+            time.sleep(wait)
+
+    # Exhausted retries
+    if isinstance(last_err, requests.HTTPError):
+        raise last_err
+    raise requests.ConnectionError(
+        f"Failed to reach {url} after {_MAX_ATTEMPTS} attempts: {last_err}"
+    )
 
 
 @dataclass
@@ -40,6 +77,45 @@ class KillerSudokuPuzzle:
     def cell_cage(self, row: int, col: int) -> int:
         return self.cage_grid[row][col]
 
+    def to_dict(self) -> dict:
+        """Serialize the puzzle (sans solution) for on-disk caching."""
+        return {
+            "puzzle_id": self.puzzle_id,
+            "date": self.date,
+            "difficulty": self.difficulty,
+            "size": self.size,
+            "num_rows_nonet": self.num_rows_nonet,
+            "num_cols_nonet": self.num_cols_nonet,
+            "cells": self.cells,
+            "cage_grid": self.cage_grid,
+            "cages": [
+                {"index": c.index, "sum_value": c.sum_value, "cells": c.cells}
+                for c in self.cages
+            ],
+            "puzzle_type": self.puzzle_type,
+            "solution": self.solution,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "KillerSudokuPuzzle":
+        cages = [
+            Cage(index=c["index"], sum_value=c["sum_value"], cells=list(c["cells"]))
+            for c in d["cages"]
+        ]
+        return cls(
+            puzzle_id=d["puzzle_id"],
+            date=d["date"],
+            difficulty=d["difficulty"],
+            size=d["size"],
+            num_rows_nonet=d["num_rows_nonet"],
+            num_cols_nonet=d["num_cols_nonet"],
+            cells=[list(row) for row in d["cells"]],
+            cage_grid=[list(row) for row in d["cage_grid"]],
+            cages=cages,
+            puzzle_type=d.get("puzzle_type", 1),
+            solution=d.get("solution"),
+        )
+
 
 class DKSFetcher:
     """Fetches puzzles from dailykillersudoku.com."""
@@ -58,7 +134,7 @@ class DKSFetcher:
     def fetch_puzzle(self, puzzle_id: int) -> KillerSudokuPuzzle:
         """Fetch a puzzle by its ID number."""
         url = DKS_PUZZLE_URL.format(puzzle_id=puzzle_id)
-        resp = self.session.get(url, timeout=15)
+        resp = _get_with_retry(self.session, url)
         resp.raise_for_status()
         return self._parse_puzzle_page(resp.text)
 
@@ -69,10 +145,10 @@ class DKSFetcher:
         Greater-Than Killer puzzles are listed after the ``#greaterThanPuzzles``
         heading and are intentionally skipped.
         """
-        resp = self.session.get(
+        resp = _get_with_retry(
+            self.session,
             DKS_BY_DATE_URL,
             params={"date": date.isoformat()},
-            timeout=15,
         )
         resp.raise_for_status()
 

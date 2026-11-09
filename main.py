@@ -1,6 +1,9 @@
 """Main window for Transparent Killer Sudoku - a minimal, always-on-top, transparent Killer Sudoku player."""
 
+import json
+import os
 import sys
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Qt, QPoint, QSize, Signal, QEvent, QObject
@@ -184,6 +187,12 @@ class TransparentSudokuWindow(QMainWindow):
         self._drag_pos: Optional[QPoint] = None
         self._settings_visible = False
 
+        # Cache dir (cross-platform)
+        appdata = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/.local/share")
+        self._cache_dir = Path(appdata) / "TransparentSudoku"
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
+        self._cache_path = self._cache_dir / "cache.json"
+
         self._setup_window()
         self._setup_ui()
         self._setup_tray()
@@ -345,18 +354,59 @@ class TransparentSudokuWindow(QMainWindow):
 
     # ---- Puzzle loading ----
 
+    def _save_cache(self):
+        if self._puzzle is None:
+            return
+        try:
+            self._cache_path.write_text(
+                json.dumps(self._puzzle.to_dict(), indent=2), encoding="utf-8"
+            )
+        except OSError as exc:
+            print(f"[Cache] failed to write: {exc}")
+
+    def _load_cache(self) -> Optional[KillerSudokuPuzzle]:
+        if not self._cache_path.exists():
+            return None
+        try:
+            d = json.loads(self._cache_path.read_text(encoding="utf-8"))
+            return KillerSudokuPuzzle.from_dict(d)
+        except (OSError, ValueError, KeyError) as exc:
+            print(f"[Cache] failed to read: {exc}")
+            return None
+
+    def _apply_puzzle(self, puzzle: KillerSudokuPuzzle):
+        """Plug a puzzle into the UI and update the title / cache."""
+        self._puzzle = puzzle
+        self.board.set_puzzle(puzzle)
+        self.puzzle_id_input.setText(str(puzzle.puzzle_id))
+        diff = "★" * puzzle.difficulty
+        self.title_label.setText(f"#{puzzle.puzzle_id}")
+        self.title_label.setToolTip(
+            f"Puzzle #{puzzle.puzzle_id} · {puzzle.date} · difficulty {puzzle.difficulty}/10 "
+            f"{diff} · {len(puzzle.cages)} cages"
+        )
+        self._save_cache()
+
     def _load_today_puzzle(self):
         self._status("Loading today's puzzle...")
         QApplication.processEvents()
         try:
             puzzle_ids = self._fetcher.fetch_today_puzzle_ids()
         except Exception as e:
-            self._error(f"Today's puzzle failed: {e}")
-            return
+            return self._offline_fallback_today(
+                f"Today's puzzle failed (site 503 or down): {e}"
+            )
         if not puzzle_ids:
-            self._error("No puzzle published for today yet")
-            return
+            return self._offline_fallback_today("No puzzle published for today yet")
         self._load_puzzle_by_id_int(puzzle_ids[0])
+
+    def _offline_fallback_today(self, error_msg: str):
+        cache = self._load_cache()
+        if cache is not None:
+            self._error(f"{error_msg} — showing last saved (#{cache.puzzle_id})")
+            self._apply_puzzle(cache)
+        else:
+            self._error(error_msg)
 
     def _load_puzzle_by_id(self):
         text = self.puzzle_id_input.text().strip()
@@ -370,17 +420,7 @@ class TransparentSudokuWindow(QMainWindow):
         QApplication.processEvents()
         try:
             puzzle = self._fetcher.fetch_puzzle(puzzle_id)
-            self._puzzle = puzzle
-            self.board.set_puzzle(puzzle)
-            self.puzzle_id_input.setText(str(puzzle_id))
-            date_str = puzzle.date
-            diff = "★" * puzzle.difficulty
-            # Keep the chrome almost invisible: only the puzzle number is shown
-            self.title_label.setText(f"#{puzzle.puzzle_id}")
-            self.title_label.setToolTip(
-                f"Puzzle #{puzzle_id} · {puzzle.date} · difficulty {puzzle.difficulty}/10 "
-                f"{diff} · {len(puzzle.cages)} cages"
-            )
+            self._apply_puzzle(puzzle)
             print(f"[Status] Loaded puzzle #{puzzle_id} ({puzzle.date})")
         except Exception as e:
             self._error(f"Puzzle #{puzzle_id} failed: {e}")
