@@ -43,7 +43,6 @@ class KillerSudokuBoard(QWidget):
         self._combo_page = 0
         self._combo_pages = 0
         self._combo_sig = None
-        self._combo_page_hint_color = QColor(190, 190, 190, 160)
 
         # Visual settings
         self._bg_color = QColor(0, 0, 0, 0)  # fully transparent bg
@@ -375,16 +374,8 @@ class KillerSudokuBoard(QWidget):
         line_h = metrics.height() + 1
         pad_x, pad_y = 6, 4
 
-        # Page indicator sits on the last line's right side; no extra height
-        page_label = f"{page + 1}/{pages}" if pages > 1 else ""
-        page_font = QFont(font)
-        page_font.setPointSizeF(max(4.0, cell * 0.15))
-        page_metrics = QFontMetrics(page_font)
-        page_w = page_metrics.horizontalAdvance(page_label)
-        page_gap = 6 if page_label else 0
-
         text_w = max(metrics.horizontalAdvance(t) for t in shown)
-        box_w = text_w + page_w + page_gap + pad_x * 2
+        box_w = text_w + pad_x * 2
         box_h = line_h * len(shown) + pad_y * 2
 
         n = self._puzzle.size
@@ -403,15 +394,6 @@ class KillerSudokuBoard(QWidget):
         for line in shown:
             painter.drawText(QPointF(box_x + pad_x, y), line)
             y += line_h
-
-        if page_label:
-            painter.setFont(page_font)
-            painter.setPen(self._combo_page_hint_color)
-            painter.drawText(
-                QPointF(box_x + box_w - pad_x - page_w,
-                        box_y + box_h - pad_y - page_metrics.descent()),
-                page_label,
-            )
 
     def _cage_combination_lines(self, cage) -> List[str]:
         """All distinct-digit combinations that still fill the cage."""
