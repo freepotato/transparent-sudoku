@@ -99,7 +99,8 @@ class KillerSudokuPuzzle:
     @classmethod
     def from_dict(cls, d: dict) -> "KillerSudokuPuzzle":
         cages = [
-            Cage(index=c["index"], sum_value=c["sum_value"], cells=list(c["cells"]))
+            Cage(index=c["index"], sum_value=c["sum_value"],
+                 cells=[tuple(cell) for cell in c["cells"]])
             for c in d["cages"]
         ]
         return cls(

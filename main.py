@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QPoint, QSize, Signal, QEvent, QObject
+from PySide6.QtCore import Qt, QPoint, QSize, Signal, QEvent, QObject, QTimer
 from PySide6.QtGui import (
     QAction, QColor, QIcon, QKeySequence, QPainter, QCursor, QPixmap, QShortcut,
 )
@@ -264,6 +264,12 @@ class TransparentSudokuWindow(QMainWindow):
         btn_clear.clicked.connect(self._clear_board)
         title_bar.addWidget(btn_clear)
 
+        btn_check = QPushButton("✓")
+        btn_check.setToolTip("Check your entries")
+        btn_check.setStyleSheet(self._small_btn_style())
+        btn_check.clicked.connect(self._check_board)
+        title_bar.addWidget(btn_check)
+
         btn_settings = QPushButton("⚙")
         btn_settings.setToolTip("Toggle settings")
         btn_settings.setStyleSheet(self._small_btn_style())
@@ -429,6 +435,30 @@ class TransparentSudokuWindow(QMainWindow):
         if self._puzzle:
             self.board.clear_user_values()
             self._status("Board cleared")
+
+    def _check_board(self):
+        """Validate entries only when the user asks for it."""
+        if self._puzzle is None:
+            return
+        wrong, filled, total = self.board.check_board()
+        if wrong:
+            self._flash(f"{wrong} wrong cell(s) in red")
+        elif filled == total:
+            self._flash("Solved! ✓")
+        else:
+            self._flash(f"{filled} filled OK · {total - filled} left")
+
+    def _flash(self, msg: str, is_error: bool = False):
+        """Briefly show a message in the title bar, then restore the puzzle id."""
+        prefix = "⚠" if is_error else "✓"
+        self.title_label.setText(f"{prefix} {msg}")
+        self.title_label.setToolTip(msg)
+        QTimer.singleShot(4000, self._restore_title)
+        print(f"[Check] {msg}")
+
+    def _restore_title(self):
+        if self._puzzle:
+            self.title_label.setText(f"#{self._puzzle.puzzle_id}")
 
     # ---- Color/settings application ----
 

@@ -1,8 +1,9 @@
 """Killer Sudoku board widget with transparent background support."""
 
-from typing import List, Optional, Tuple
+from itertools import combinations
+from typing import List, Optional, Set, Tuple
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
@@ -21,10 +22,24 @@ class KillerSudokuBoard(QWidget):
         super().__init__(parent)
         self._puzzle: Optional[KillerSudokuPuzzle] = None
         self._user_values: List[List[int]] = []  # user-entered values (0=empty)
+        self._pencils: List[List[Set[int]]] = []  # per-cell candidate digits
         self._selected_cells: List[Tuple[int, int]] = []  # drag-selectable cells
         self._anchor_cell: Optional[Tuple[int, int]] = None  # cursor cell
         self._dragging = False
         self._fixed_mask: List[List[bool]] = []  # True for given cells
+
+        # Results are only shown after an explicit check
+        self._checked_wrong: Set[Tuple[int, int]] = set()
+        self._checked_cage_bad: Set[int] = set()
+        self._checked_cage_done: Set[int] = set()
+
+        # Typing session: a single digit commits, several digits become pencils
+        self._typing_key = None
+        self._typing_digits: List[int] = []
+        self._type_timer = QTimer(self)
+        self._type_timer.setSingleShot(True)
+        self._type_timer.setInterval(900)
+        self._type_timer.timeout.connect(self._end_typing_session)
 
         # Visual settings
         self._bg_color = QColor(0, 0, 0, 0)  # fully transparent bg
@@ -32,12 +47,13 @@ class KillerSudokuBoard(QWidget):
         self._cage_border_width = 1.0
         self._number_color = QColor(20, 20, 20, 255)
         self._fixed_number_color = QColor(20, 20, 20, 255)
+        self._pencil_color = QColor(110, 110, 110, 200)
         self._cage_sum_color = QColor(160, 160, 160, 210)
-        self._cage_done_color = QColor(40, 160, 80, 255)
-        self._cage_error_color = QColor(200, 60, 60, 255)
+        self._cage_done_color = QColor(40, 160, 80, 230)
+        self._cage_error_color = QColor(200, 60, 60, 230)
+        self._check_error_color = QColor(200, 60, 60, 255)
         self._selected_color = QColor(100, 150, 255, 100)
         self._highlight_color = QColor(200, 220, 255, 60)
-        self._error_color = QColor(200, 50, 50, 180)
         self._same_digit_color = QColor(255, 200, 80, 75)
         self._cell_size = 40  # base cell size
         self._cage_sum_font_scale = 0.22
@@ -57,9 +73,11 @@ class KillerSudokuBoard(QWidget):
         self._puzzle = puzzle
         size = puzzle.size
         self._user_values = [[0] * size for _ in range(size)]
+        self._pencils = [[set() for _ in range(size)] for _ in range(size)]
         self._fixed_mask = [[puzzle.cells[r][c] != 0 for c in range(size)] for r in range(size)]
         self._selected_cells = []
         self._anchor_cell = None
+        self._reset_check_state()
         self.update()
 
     def set_background_color(self, color: QColor):
@@ -99,13 +117,99 @@ class KillerSudokuBoard(QWidget):
         if self._fixed_mask[row][col]:
             return
         self._user_values[row][col] = value
+        self._pencils[row][col].clear()
+        self._reset_check_state()
         self.update()
+
+    def set_pencils(self, row: int, col: int, digits: Set[int]):
+        """Mark a cell with pencil candidates (clears any committed value)."""
+        if self._fixed_mask[row][col]:
+            return
+        self._user_values[row][col] = 0
+        self._pencils[row][col] = set(digits)
+        self._reset_check_state()
+        self.update()
+
+    def pencils(self, row: int, col: int) -> Set[int]:
+        return set(self._pencils[row][col]) if self._pencils else set()
 
     def clear_user_values(self):
         if self._puzzle:
             size = self._puzzle.size
             self._user_values = [[0] * size for _ in range(size)]
+            self._pencils = [[set() for _ in range(size)] for _ in range(size)]
+            self._reset_check_state()
             self.update()
+
+    def check_board(self) -> Tuple[int, int, int]:
+        """Validate entries against the solution and highlight mistakes.
+
+        Results stay invisible until this is called. Returns
+        (wrong cells, filled cells, editable cells).
+        """
+        if self._puzzle is None:
+            return (0, 0, 0)
+
+        self._reset_check_state()
+        n = self._puzzle.size
+        solution = self._puzzle.solution
+        wrong = filled = total = 0
+
+        for r in range(n):
+            for c in range(n):
+                if self._fixed_mask[r][c]:
+                    continue
+                total += 1
+                value = self._user_values[r][c]
+                if not value:
+                    continue
+                filled += 1
+                if solution is not None:
+                    if solution[r][c] != value:
+                        self._checked_wrong.add((r, c))
+                        wrong += 1
+                elif self._has_conflict(r, c, value):
+                    self._checked_wrong.add((r, c))
+                    wrong += 1
+
+        # Cage-level verdicts, also only on demand
+        for cage in self._puzzle.cages:
+            values = [self.user_value(r, c) for r, c in cage.cells]
+            if any(v == 0 for v in values):
+                continue
+            if sum(values) == cage.sum_value:
+                self._checked_cage_done.add(cage.index)
+            else:
+                self._checked_cage_bad.add(cage.index)
+
+        self.update()
+        return (wrong, filled, total)
+
+    def _has_conflict(self, row: int, col: int, value: int) -> bool:
+        """Rule-based fallback when no solution is embedded in the page."""
+        n = self._puzzle.size
+        for c2 in range(n):
+            if c2 != col and self.user_value(row, c2) == value:
+                return True
+        for r2 in range(n):
+            if r2 != row and self.user_value(r2, col) == value:
+                return True
+        nr = self._puzzle.num_rows_nonet
+        nc = self._puzzle.num_cols_nonet
+        br, bc = (row // nr) * nr, (col // nc) * nc
+        for r2 in range(br, br + nr):
+            for c2 in range(bc, bc + nc):
+                if (r2, c2) != (row, col) and self.user_value(r2, c2) == value:
+                    return True
+        for r2, c2 in self._puzzle.cages[self._puzzle.cage_grid[row][col]].cells:
+            if (r2, c2) != (row, col) and self.user_value(r2, c2) == value:
+                return True
+        return False
+
+    def _reset_check_state(self):
+        self._checked_wrong.clear()
+        self._checked_cage_bad.clear()
+        self._checked_cage_done.clear()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -117,7 +221,7 @@ class KillerSudokuBoard(QWidget):
         if self._puzzle is None:
             return super().sizeHint()
         n = self._puzzle.size
-        return self._cell_size * n + 2, self._cell_size * n + 2
+        return QSize(self._cell_size * n + 2, self._cell_size * n + 2)
 
     def paintEvent(self, event):
         if self._puzzle is None:
@@ -161,9 +265,6 @@ class KillerSudokuBoard(QWidget):
                         cr = QRectF(offset_x + c * cell, offset_y + r * cell, cell, cell)
                         painter.fillRect(cr, self._highlight_color)
 
-        # Draw cell backgrounds for conflicting cells
-        self._draw_conflicts(painter, offset_x, offset_y, cell)
-
         # Draw cage borders (the only visible lines on the board)
         self._draw_cage_borders(painter, offset_x, offset_y, cell)
 
@@ -173,7 +274,10 @@ class KillerSudokuBoard(QWidget):
         # Draw numbers
         self._draw_numbers(painter, offset_x, offset_y, cell)
 
-        # Draw the running total beside the current selection
+        # Single cage selected: list the possible digit combinations
+        self._draw_cage_combinations(painter, offset_x, offset_y, cell)
+
+        # Several cages selected: show their combined target
         self._draw_selection_sum(painter, offset_x, offset_y, cell)
 
     def _complete_cages(self):
@@ -192,13 +296,13 @@ class KillerSudokuBoard(QWidget):
         return sorted(cages, key=lambda c: c.index)
 
     def _draw_selection_sum(self, painter, ox, oy, cell):
-        """Show the sum of cage totals when the selection covers whole cages."""
+        """Show the sum of cage totals when several whole cages are selected."""
         cages = self._complete_cages()
-        if not cages:
+        if len(cages) < 2:
             return
 
         total = sum(c.sum_value for c in cages)
-        text = f"Σ {total}" if len(cages) == 1 else f"Σ {total} · {len(cages)} cages"
+        text = f"Σ {total} · {len(cages)} cages"
 
         font = QFont()
         font.setPointSizeF(max(8.0, cell * 0.22))
@@ -241,64 +345,62 @@ class KillerSudokuBoard(QWidget):
         painter.setPen(QColor(245, 245, 245, 210))
         painter.drawText(pill, Qt.AlignCenter, text)
 
-    def _draw_conflicts(self, painter, ox, oy, cell):
-        """Draw red background on conflicting cells."""
-        if self._puzzle is None:
+    def _draw_cage_combinations(self, painter, ox, oy, cell):
+        """List every digit combination that still fits the selected cage.
+
+        Drawn as a tiny box in the bottom-left corner of the board.
+        """
+        cages = self._complete_cages()
+        if len(cages) != 1:
             return
+
+        cage = cages[0]
+        lines = self._cage_combination_lines(cage)
+
+        font = QFont()
+        font.setPointSizeF(max(5.0, cell * 0.19))
+        painter.setFont(font)
+        metrics = QFontMetrics(font)
+
+        max_lines = 5
+        shown = lines[:max_lines]
+        if len(lines) > max_lines:
+            shown.append(f"… +{len(lines) - max_lines}")
+
+        line_h = metrics.height() + 1
+        box_w = max(metrics.horizontalAdvance(t) for t in shown) + 8
+        box_h = line_h * len(shown) + 4
+
         n = self._puzzle.size
-        has_conflict = False
-        conflict_cells = set()
+        box_x = ox + 3
+        box_y = oy + n * cell - box_h - 3
 
-        for r in range(n):
-            for c in range(n):
-                v = self.user_value(r, c)
-                if v == 0:
-                    continue
-                # Check row
-                for c2 in range(n):
-                    if c2 != c and self.user_value(r, c2) == v:
-                        conflict_cells.add((r, c))
-                        conflict_cells.add((r, c2))
-                        has_conflict = True
-                # Check column
-                for r2 in range(n):
-                    if r2 != r and self.user_value(r2, c) == v:
-                        conflict_cells.add((r, c))
-                        conflict_cells.add((r2, c))
-                        has_conflict = True
-                # Check cage
-                cage_r = self._puzzle.cage_grid[r][c]
-                for r2 in range(n):
-                    for c2 in range(n):
-                        if (r2, c2) != (r, c) and self._puzzle.cage_grid[r2][c2] == cage_r:
-                            if self.user_value(r2, c2) == v:
-                                conflict_cells.add((r, c))
-                                conflict_cells.add((r2, c2))
-                                has_conflict = True
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(30, 30, 30, 140))
+        painter.drawRoundedRect(QRectF(box_x, box_y, box_w, box_h), 3, 3)
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QColor(240, 240, 240, 225))
 
-        # Check nonet
-        nr = self._puzzle.num_rows_nonet
-        nc = self._puzzle.num_cols_nonet
-        for r in range(n):
-            for c in range(n):
-                v = self.user_value(r, c)
-                if v == 0:
-                    continue
-                br = (r // nr) * nr
-                bc = (c // nc) * nc
-                for r2 in range(br, br + nr):
-                    for c2 in range(bc, bc + nc):
-                        if (r2, c2) != (r, c) and self.user_value(r2, c2) == v:
-                            conflict_cells.add((r, c))
-                            conflict_cells.add((r2, c2))
+        y = box_y + 2 + metrics.ascent()
+        for line in shown:
+            painter.drawText(QPointF(box_x + 4, y), line)
+            y += line_h
 
-        if has_conflict:
-            painter.fillRect(self.rect(), Qt.transparent)
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(self._error_color)
-            for r, c in conflict_cells:
-                cr = QRectF(ox + c * cell + 1, oy + r * cell + 1, cell - 2, cell - 2)
-                painter.drawRect(cr)
+    def _cage_combination_lines(self, cage) -> List[str]:
+        """All distinct-digit combinations that still fill the cage."""
+        values = [self.user_value(r, c) for r, c in cage.cells]
+        used = {v for v in values if v}
+        empty = len([v for v in values if not v])
+        remaining = cage.sum_value - sum(used)
+
+        if empty == 0:
+            return ["✓" if remaining == 0 else f"✗ {remaining:+d}"]
+        if remaining <= 0:
+            return ["✗"]
+
+        digits = [d for d in range(1, 10) if d not in used]
+        combos = [c for c in combinations(digits, empty) if sum(c) == remaining]
+        return [" ".join(str(d) for d in combo) for combo in combos] or ["—"]
 
     def _draw_cage_borders(self, painter, ox, oy, cell):
         """Draw thick borders between cells of different cages."""
@@ -372,24 +474,20 @@ class KillerSudokuBoard(QWidget):
                 tx = ox + tc * cell + 2
                 ty = oy + tr * cell + sum_font_size + 1
 
-                fm = QFontMetrics(font)
                 sum_text = str(cage.sum_value)
 
-                # Colour the sum when the cage is complete / over target
-                values = [self.user_value(r, c) for r, c in cage.cells]
-                filled = [v for v in values if v]
-                current = sum(filled)
-                if len(filled) == len(cage.cells) and current == cage.sum_value:
-                    painter.setPen(self._cage_done_color)
-                elif current > cage.sum_value:
+                # Verdicts appear only after the user presses Check
+                if ci in self._checked_cage_bad:
                     painter.setPen(self._cage_error_color)
+                elif ci in self._checked_cage_done:
+                    painter.setPen(self._cage_done_color)
                 else:
                     painter.setPen(self._cage_sum_color)
 
                 painter.drawText(QPointF(tx, ty), sum_text)
 
     def _draw_numbers(self, painter, ox, oy, cell):
-        """Draw numbers in cells."""
+        """Draw committed values and pencil marks."""
         if self._puzzle is None:
             return
         n = self._puzzle.size
@@ -403,21 +501,41 @@ class KillerSudokuBoard(QWidget):
         user_font = QFont()
         user_font.setPointSizeF(font_size)
 
+        pencil_font = QFont()
+        pencil_font.setPointSizeF(max(4.0, cell * 0.21))
+
         for r in range(n):
             for c in range(n):
                 val = self.user_value(r, c)
-                if val == 0:
-                    continue
 
-                cx = ox + c * cell + cell / 2
-                cy = oy + r * cell + cell / 2
+                if val == 0:
+                    # Pencil candidates in a small 3x3 grid
+                    digits = self._pencils[r][c]
+                    if digits:
+                        painter.setFont(pencil_font)
+                        painter.setPen(self._pencil_color)
+                        slot = cell / 3.0
+                        for d in sorted(digits):
+                            idx = d - 1
+                            dr, dc = divmod(idx, 3)
+                            sub = QRectF(
+                                ox + c * cell + dc * slot,
+                                oy + r * cell + dr * slot,
+                                slot, slot,
+                            )
+                            painter.drawText(sub, Qt.AlignCenter, str(d))
+                    continue
 
                 if self._fixed_mask[r][c]:
                     painter.setFont(fixed_font)
                     painter.setPen(self._fixed_number_color)
                 else:
                     painter.setFont(user_font)
-                    painter.setPen(self._number_color)
+                    painter.setPen(
+                        self._check_error_color
+                        if (r, c) in self._checked_wrong
+                        else self._number_color
+                    )
 
                 text_rect = QRectF(ox + c * cell, oy + r * cell, cell, cell)
                 painter.drawText(text_rect, Qt.AlignCenter, str(val))
@@ -495,9 +613,7 @@ class KillerSudokuBoard(QWidget):
             value = key - Qt.Key_0
 
         if value:
-            for r, c in self._selected_cells or [(row, col)]:
-                self.set_user_value(r, c, value)
-                self.value_entered.emit(r, c, value)
+            self._type_digit(value)
             event.accept()
             return
 
@@ -506,6 +622,7 @@ class KillerSudokuBoard(QWidget):
             if key == Qt.Key_C and event.modifiers() & Qt.ControlModifier:
                 super().keyPressEvent(event)
                 return
+            self._end_typing_session()
             for r, c in self._selected_cells or [(row, col)]:
                 self.set_user_value(r, c, 0)
                 self.value_entered.emit(r, c, 0)
@@ -536,3 +653,36 @@ class KillerSudokuBoard(QWidget):
             return
 
         super().keyPressEvent(event)
+
+    def _type_digit(self, digit: int):
+        """Commit a lone digit; accumulate several digits into pencil marks."""
+        cells = [(r, c) for r, c in (self._selected_cells or [self._anchor_cell])
+                 if r is not None and not self._fixed_mask[r][c]]
+        if not cells:
+            return
+
+        signature = tuple(sorted(cells))
+        same_session = self._type_timer.isActive() and self._typing_key == signature
+
+        if same_session:
+            if digit not in self._typing_digits:
+                self._typing_digits.append(digit)
+        else:
+            self._typing_digits = [digit]
+        self._typing_key = signature
+
+        if len(self._typing_digits) == 1:
+            for r, c in cells:
+                self.set_user_value(r, c, digit)
+                self.value_entered.emit(r, c, digit)
+        else:
+            digits = set(self._typing_digits)
+            for r, c in cells:
+                self.set_pencils(r, c, digits)
+                self.value_entered.emit(r, c, 0)
+
+        self._type_timer.start()
+
+    def _end_typing_session(self):
+        self._typing_key = None
+        self._typing_digits = []
