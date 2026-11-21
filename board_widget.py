@@ -46,6 +46,13 @@ class KillerSudokuBoard(QWidget):
         self._bg_color = QColor(0, 0, 0, 0)  # fully transparent bg
         self._cage_border_color = QColor(165, 165, 165, 190)
         self._cage_border_width = 1.0
+
+        # Cell grid: thin solid lines, thicker solid lines between 3x3 blocks
+        self._grid_color = QColor(140, 140, 140, 110)
+        self._grid_width = 0.7
+        self._block_color = QColor(110, 110, 110, 180)
+        self._block_width = 1.6
+        self._cage_dash_pattern = [4, 3]
         self._number_color = QColor(20, 20, 20, 255)
         self._fixed_number_color = QColor(20, 20, 20, 255)
         self._pencil_color = QColor(110, 110, 110, 200)
@@ -267,7 +274,8 @@ class KillerSudokuBoard(QWidget):
                         cr = QRectF(offset_x + c * cell, offset_y + r * cell, cell, cell)
                         painter.fillRect(cr, self._highlight_color)
 
-        # Draw cage borders (the only visible lines on the board)
+        # Draw cell grid, then dashed cage borders over it
+        self._draw_grid(painter, offset_x, offset_y, cell)
         self._draw_cage_borders(painter, offset_x, offset_y, cell)
 
         # Draw cage sums
@@ -419,13 +427,48 @@ class KillerSudokuBoard(QWidget):
         combos = [c for c in combinations(digits, empty) if sum(c) == remaining]
         return [" ".join(str(d) for d in combo) for combo in combos] or ["—"]
 
+    def _draw_grid(self, painter, ox, oy, cell):
+        """Solid cell grid with heavier separators between 3x3 blocks."""
+        if self._puzzle is None:
+            return
+        n = self._puzzle.size
+        block_rows = self._puzzle.num_rows_nonet or 3
+        block_cols = self._puzzle.num_cols_nonet or 3
+        side = n * cell
+
+        thin = QPen(self._grid_color, self._grid_width)
+        painter.setPen(thin)
+        for i in range(1, n):
+            if i % block_cols == 0:
+                continue
+            x = ox + i * cell
+            painter.drawLine(QPointF(x, oy), QPointF(x, oy + side))
+        for i in range(1, n):
+            if i % block_rows == 0:
+                continue
+            y = oy + i * cell
+            painter.drawLine(QPointF(ox, y), QPointF(ox + side, y))
+
+        thick = QPen(self._block_color, self._block_width)
+        painter.setPen(thick)
+        for i in range(block_cols, n, block_cols):
+            x = ox + i * cell
+            painter.drawLine(QPointF(x, oy), QPointF(x, oy + side))
+        for i in range(block_rows, n, block_rows):
+            y = oy + i * cell
+            painter.drawLine(QPointF(ox, y), QPointF(ox + side, y))
+
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(QRectF(ox, oy, side, side))
+
     def _draw_cage_borders(self, painter, ox, oy, cell):
-        """Draw thick borders between cells of different cages."""
+        """Draw dashed borders between cells of different cages."""
         if self._puzzle is None:
             return
         n = self._puzzle.size
         pen = QPen(self._cage_border_color, self._cage_border_width)
-        pen.setCapStyle(Qt.RoundCap)
+        pen.setCapStyle(Qt.FlatCap)
+        pen.setDashPattern(self._cage_dash_pattern)
         painter.setPen(pen)
 
         # For each cell, check if each edge needs a cage border
