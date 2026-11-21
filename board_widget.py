@@ -41,12 +41,9 @@ class KillerSudokuBoard(QWidget):
 
         # Cage combination panel pagination
         self._combo_page = 0
-        self._combo_pages = 1
+        self._combo_pages = 0
         self._combo_sig = None
-        self._combo_prev_rect: Optional[QRectF] = None
-        self._combo_next_rect: Optional[QRectF] = None
-        self._combo_arrow_color = QColor(235, 235, 235, 235)
-        self._combo_arrow_disabled_color = QColor(150, 150, 150, 110)
+        self._combo_page_hint_color = QColor(190, 190, 190, 160)
 
         # Visual settings
         self._bg_color = QColor(0, 0, 0, 0)  # fully transparent bg
@@ -348,8 +345,7 @@ class KillerSudokuBoard(QWidget):
 
         Drawn as a tiny box in the bottom-left corner of the board.
         """
-        self._combo_prev_rect = None
-        self._combo_next_rect = None
+        self._combo_pages = 0
 
         cages = self._complete_cages()
         if len(cages) != 1:
@@ -377,14 +373,19 @@ class KillerSudokuBoard(QWidget):
         shown = lines[page * per_page:(page + 1) * per_page]
 
         line_h = metrics.height() + 1
-        nav_h = line_h + 2
+        pad_x, pad_y = 6, 4
+
+        # Page indicator sits on the last line's right side; no extra height
+        page_label = f"{page + 1}/{pages}" if pages > 1 else ""
+        page_font = QFont(font)
+        page_font.setPointSizeF(max(4.0, cell * 0.15))
+        page_metrics = QFontMetrics(page_font)
+        page_w = page_metrics.horizontalAdvance(page_label)
+        page_gap = 6 if page_label else 0
 
         text_w = max(metrics.horizontalAdvance(t) for t in shown)
-        arrow_w = max(14, metrics.horizontalAdvance("›") + 8)
-        nav_w = arrow_w * 2 + metrics.horizontalAdvance(f"{page + 1}/{pages}") + 8
-
-        box_w = max(text_w, nav_w) + 8
-        box_h = line_h * len(shown) + nav_h + 6
+        box_w = text_w + page_w + page_gap + pad_x * 2
+        box_h = line_h * len(shown) + pad_y * 2
 
         n = self._puzzle.size
         box_x = ox + 3
@@ -396,35 +397,21 @@ class KillerSudokuBoard(QWidget):
         painter.setBrush(Qt.NoBrush)
 
         # Combination lines
+        painter.setFont(font)
         painter.setPen(QColor(240, 240, 240, 225))
-        y = box_y + 2 + metrics.ascent()
+        y = box_y + pad_y + metrics.ascent()
         for line in shown:
-            painter.drawText(QPointF(box_x + 4, y), line)
+            painter.drawText(QPointF(box_x + pad_x, y), line)
             y += line_h
 
-        # Pagination row: ‹ 1/2 ›
-        nav_y = y + 1
-        nav_bottom = box_y + box_h - 3
-
-        prev_rect = QRectF(box_x + 3, nav_y, arrow_w, nav_bottom - nav_y)
-        next_rect = QRectF(box_x + box_w - arrow_w - 3, nav_y, arrow_w, nav_bottom - nav_y)
-        self._combo_prev_rect = prev_rect if page > 0 else None
-        self._combo_next_rect = next_rect if page < pages - 1 else None
-
-        can_prev = page > 0
-        can_next = page < pages - 1
-
-        painter.setPen(self._combo_arrow_color if can_prev else self._combo_arrow_disabled_color)
-        painter.drawText(prev_rect, Qt.AlignCenter, "‹")
-
-        painter.setPen(self._combo_arrow_color if can_next else self._combo_arrow_disabled_color)
-        painter.drawText(next_rect, Qt.AlignCenter, "›")
-
-        painter.setPen(self._combo_arrow_disabled_color)
-        painter.drawText(
-            QRectF(prev_rect.right(), nav_y, next_rect.left() - prev_rect.right(), nav_bottom - nav_y),
-            Qt.AlignCenter, f"{page + 1}/{pages}",
-        )
+        if page_label:
+            painter.setFont(page_font)
+            painter.setPen(self._combo_page_hint_color)
+            painter.drawText(
+                QPointF(box_x + box_w - pad_x - page_w,
+                        box_y + box_h - pad_y - page_metrics.descent()),
+                page_label,
+            )
 
     def _cage_combination_lines(self, cage) -> List[str]:
         """All distinct-digit combinations that still fill the cage."""
@@ -592,25 +579,25 @@ class KillerSudokuBoard(QWidget):
             return (row, col)
         return None
 
+    def wheelEvent(self, event):
+        """Scroll through the candidate-combination pages."""
+        if self._combo_pages > 1:
+            delta = event.angleDelta().y()
+            if delta:
+                step = -1 if delta > 0 else 1
+                page = self._combo_page + step
+                self._combo_page = max(0, min(self._combo_pages - 1, page))
+                self.update()
+                event.accept()
+                return
+        super().wheelEvent(event)
+
     def mousePressEvent(self, event):
         if event.button() != Qt.LeftButton:
             super().mousePressEvent(event)
             return
 
-        # Pagination arrows on the cage-combination panel
-        pos = event.position()
-        if self._combo_prev_rect and self._combo_prev_rect.contains(pos):
-            self._combo_page = max(0, self._combo_page - 1)
-            self.update()
-            event.accept()
-            return
-        if self._combo_next_rect and self._combo_next_rect.contains(pos):
-            self._combo_page = min(self._combo_pages - 1, self._combo_page + 1)
-            self.update()
-            event.accept()
-            return
-
-        cell = self._cell_from_pos(pos)
+        cell = self._cell_from_pos(event.position())
         if cell is not None:
             self._selected_cells = [cell]
             self._anchor_cell = cell
