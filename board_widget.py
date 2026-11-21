@@ -3,7 +3,7 @@
 from itertools import combinations
 from typing import List, Optional, Set, Tuple
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
@@ -27,14 +27,12 @@ class KillerSudokuBoard(QWidget):
         self._anchor_cell: Optional[Tuple[int, int]] = None  # cursor cell
         self._dragging = False
         self._fixed_mask: List[List[bool]] = []  # True for given cells
+        self._sum_cells: Set[Tuple[int, int]] = set()  # cells holding a cage sum
 
-        # Typing session: a single digit commits, several digits become pencils
+        # Typing session: a single digit commits; more digits on the same
+        # selection become pencil marks. Only a selection change resets it.
         self._typing_key = None
         self._typing_digits: List[int] = []
-        self._type_timer = QTimer(self)
-        self._type_timer.setSingleShot(True)
-        self._type_timer.setInterval(900)
-        self._type_timer.timeout.connect(self._end_typing_session)
 
         # Undo history for committed values only (pencil marks are not recorded)
         self._undo_stack: List[List[Tuple[int, int, int]]] = []
@@ -78,7 +76,15 @@ class KillerSudokuBoard(QWidget):
         self._selected_cells = []
         self._anchor_cell = None
         self._undo_stack.clear()
+        self._end_typing_session()
+        self._sum_cells = self._compute_sum_cells()
         self.update()
+
+    def _compute_sum_cells(self) -> Set[Tuple[int, int]]:
+        """Cells that show a cage total (top-left of each cage)."""
+        if self._puzzle is None:
+            return set()
+        return {min(cage.cells) for cage in self._puzzle.cages if cage.cells}
 
     def set_background_color(self, color: QColor):
         self._bg_color = color
@@ -137,6 +143,7 @@ class KillerSudokuBoard(QWidget):
             self._user_values = [[0] * size for _ in range(size)]
             self._pencils = [[set() for _ in range(size)] for _ in range(size)]
             self._undo_stack.clear()
+            self._end_typing_session()
             self.update()
 
     def undo(self) -> bool:
@@ -147,6 +154,7 @@ class KillerSudokuBoard(QWidget):
         for r, c, previous in group:
             self._user_values[r][c] = previous
             self._pencils[r][c].clear()
+        self._end_typing_session()
         self.update()
         return True
 
@@ -503,9 +511,6 @@ class KillerSudokuBoard(QWidget):
         user_font = QFont()
         user_font.setPointSizeF(font_size)
 
-        pencil_font = QFont()
-        pencil_font.setPointSizeF(max(4.0, cell * 0.21))
-
         for r in range(n):
             for c in range(n):
                 val = self.user_value(r, c)
@@ -514,16 +519,23 @@ class KillerSudokuBoard(QWidget):
                     # Pencil candidates in a small 3x3 grid
                     digits = self._pencils[r][c]
                     if digits:
+                        # Leave the top band free where the cage sum is drawn
+                        top_pad = cell * 0.26 if (r, c) in self._sum_cells else 0.0
+                        slot_w = cell / 3.0
+                        slot_h = (cell - top_pad) / 3.0
+
+                        pencil_font = QFont()
+                        pencil_font.setPixelSize(max(5, int(min(slot_w, slot_h) * 0.82)))
                         painter.setFont(pencil_font)
                         painter.setPen(self._pencil_color)
-                        slot = cell / 3.0
+
                         for d in sorted(digits):
                             idx = d - 1
                             dr, dc = divmod(idx, 3)
                             sub = QRectF(
-                                ox + c * cell + dc * slot,
-                                oy + r * cell + dr * slot,
-                                slot, slot,
+                                ox + c * cell + dc * slot_w,
+                                oy + r * cell + top_pad + dr * slot_h,
+                                slot_w, slot_h,
                             )
                             painter.drawText(sub, Qt.AlignCenter, str(d))
                     continue
@@ -581,12 +593,16 @@ class KillerSudokuBoard(QWidget):
 
         cell = self._cell_from_pos(event.position())
         if cell is not None:
+            if self._selected_cells != [cell]:
+                self._end_typing_session()
             self._selected_cells = [cell]
             self._anchor_cell = cell
             self._dragging = True
             self.setFocus()
             self.cell_clicked.emit(cell[0], cell[1])
         else:
+            if self._selected_cells:
+                self._end_typing_session()
             self._selected_cells = []
             self._anchor_cell = None
         self.update()
@@ -596,6 +612,7 @@ class KillerSudokuBoard(QWidget):
         if self._dragging and event.buttons() & Qt.LeftButton:
             cell = self._cell_from_pos(event.position())
             if cell is not None and cell not in self._selected_cells:
+                self._end_typing_session()
                 self._selected_cells.append(cell)
                 self._anchor_cell = cell
                 self.cell_clicked.emit(cell[0], cell[1])
@@ -659,6 +676,7 @@ class KillerSudokuBoard(QWidget):
             n = self._puzzle.size
             new_r = (row + row_move) % n
             new_c = (col + col_move) % n
+            self._end_typing_session()
             self._anchor_cell = (new_r, new_c)
             self._selected_cells = [self._anchor_cell]
             self.cell_clicked.emit(new_r, new_c)
@@ -676,7 +694,7 @@ class KillerSudokuBoard(QWidget):
             return
 
         signature = tuple(sorted(cells))
-        same_session = self._type_timer.isActive() and self._typing_key == signature
+        same_session = self._typing_key == signature
 
         if same_session:
             if digit not in self._typing_digits:
@@ -697,8 +715,6 @@ class KillerSudokuBoard(QWidget):
             for r, c in cells:
                 self.set_pencils(r, c, digits)
                 self.value_entered.emit(r, c, 0)
-
-        self._type_timer.start()
 
     def _end_typing_session(self):
         self._typing_key = None
