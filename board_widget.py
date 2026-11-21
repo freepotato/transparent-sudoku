@@ -516,28 +516,43 @@ class KillerSudokuBoard(QWidget):
                 val = self.user_value(r, c)
 
                 if val == 0:
-                    # Pencil candidates in a small 3x3 grid
+                    # Pencil candidates: layout and size depend on how many
                     digits = self._pencils[r][c]
                     if digits:
                         # Leave the top band free where the cage sum is drawn
                         top_pad = cell * 0.26 if (r, c) in self._sum_cells else 0.0
-                        slot_w = cell / 3.0
-                        slot_h = (cell - top_pad) / 3.0
+                        avail_h = cell - top_pad
+
+                        count = len(digits)
+                        if count <= 2:
+                            cols, rows, max_frac = 2, 1, 0.34
+                        elif count <= 4:
+                            cols, rows, max_frac = 2, 2, 0.28
+                        elif count <= 6:
+                            cols, rows, max_frac = 3, 2, 0.24
+                        else:
+                            cols, rows, max_frac = 3, 3, 0.21
+
+                        slot_w = cell / cols
+                        slot_h = avail_h / rows
+                        px = min(int(min(slot_w, slot_h) * 0.8), int(cell * max_frac))
 
                         pencil_font = QFont()
-                        pencil_font.setPixelSize(max(5, int(min(slot_w, slot_h) * 0.82)))
+                        pencil_font.setPixelSize(max(5, px))
                         painter.setFont(pencil_font)
                         painter.setPen(self._pencil_color)
 
-                        for d in sorted(digits):
-                            idx = d - 1
-                            dr, dc = divmod(idx, 3)
-                            sub = QRectF(
-                                ox + c * cell + dc * slot_w,
-                                oy + r * cell + top_pad + dr * slot_h,
-                                slot_w, slot_h,
-                            )
-                            painter.drawText(sub, Qt.AlignCenter, str(d))
+                        ordered = sorted(digits)
+                        for ri in range(rows):
+                            row_digits = ordered[ri * cols:(ri + 1) * cols]
+                            if not row_digits:
+                                break
+                            row_w = slot_w * len(row_digits)
+                            start_x = ox + c * cell + (cell - row_w) / 2
+                            y = oy + r * cell + top_pad + ri * slot_h
+                            for ci, d in enumerate(row_digits):
+                                sub = QRectF(start_x + ci * slot_w, y, slot_w, slot_h)
+                                painter.drawText(sub, Qt.AlignCenter, str(d))
                     continue
 
                 if self._fixed_mask[r][c]:
