@@ -56,6 +56,7 @@ class KillerSudokuBoard(QWidget):
         self._number_color = QColor(20, 20, 20, 255)
         self._fixed_number_color = QColor(20, 20, 20, 255)
         self._pencil_color = QColor(110, 110, 110, 200)
+        self._pencil_font_frac = 0.24
         self._cage_sum_color = QColor(160, 160, 160, 210)
         self._selected_color = QColor(100, 150, 255, 100)
         self._highlight_color = QColor(200, 220, 255, 60)
@@ -411,6 +412,47 @@ class KillerSudokuBoard(QWidget):
             painter.drawText(QPointF(box_x + pad_x, y), line)
             y += line_h
 
+    def _draw_pencils(self, painter, r, c, ox, oy, cell, digits):
+        """Pencil marks as a queue of digits with a fixed size.
+
+        Digits flow left to right and wrap at the cell padding, like the
+        website's pencil marks.
+        """
+        font = QFont()
+        font.setPixelSize(max(5, int(cell * self._pencil_font_frac)))
+        painter.setFont(font)
+        painter.setPen(self._pencil_color)
+
+        metrics = QFontMetrics(font)
+        spacing = max(1, int(font.pixelSize() * 0.08))
+        pad_x = max(2, int(cell * 0.07))
+        avail_w = cell - pad_x * 2
+
+        # Keep the cage sum readable in top-left cells
+        top_pad = cell * 0.26 if (r, c) in self._sum_cells else pad_x * 0.5
+
+        lines: List[List[str]] = [[]]
+        line_w = 0
+        for d in sorted(digits):
+            glyph = str(d)
+            w = metrics.horizontalAdvance(glyph)
+            if lines[-1] and line_w + spacing + w > avail_w:
+                lines.append([])
+                line_w = 0
+            if lines[-1]:
+                line_w += spacing
+            lines[-1].append(glyph)
+            line_w += w
+
+        x0 = ox + c * cell + pad_x
+        y = oy + r * cell + top_pad + metrics.ascent()
+        for line in lines:
+            x = x0
+            for glyph in line:
+                painter.drawText(QPointF(x, y), glyph)
+                x += metrics.horizontalAdvance(glyph) + spacing
+            y += metrics.height()
+
     def _cage_combination_lines(self, cage) -> List[str]:
         """All distinct-digit combinations that still fill the cage."""
         values = [self.user_value(r, c) for r, c in cage.cells]
@@ -428,78 +470,85 @@ class KillerSudokuBoard(QWidget):
         return [" ".join(str(d) for d in combo) for combo in combos] or ["—"]
 
     def _draw_grid(self, painter, ox, oy, cell):
-        """Solid cell grid with heavier separators between 3x3 blocks."""
+        """Solid cell grid with heavier separators between 3x3 blocks.
+
+        Edges that belong to a cage boundary are left empty here so the
+        dashed cage border is the only line drawn there.
+        """
         if self._puzzle is None:
             return
         n = self._puzzle.size
         block_rows = self._puzzle.num_rows_nonet or 3
         block_cols = self._puzzle.num_cols_nonet or 3
+        grid = self._puzzle.cage_grid
         side = n * cell
 
         thin = QPen(self._grid_color, self._grid_width)
-        painter.setPen(thin)
-        for i in range(1, n):
-            if i % block_cols == 0:
-                continue
-            x = ox + i * cell
-            painter.drawLine(QPointF(x, oy), QPointF(x, oy + side))
-        for i in range(1, n):
-            if i % block_rows == 0:
-                continue
-            y = oy + i * cell
-            painter.drawLine(QPointF(ox, y), QPointF(ox + side, y))
-
         thick = QPen(self._block_color, self._block_width)
-        painter.setPen(thick)
-        for i in range(block_cols, n, block_cols):
-            x = ox + i * cell
-            painter.drawLine(QPointF(x, oy), QPointF(x, oy + side))
-        for i in range(block_rows, n, block_rows):
-            y = oy + i * cell
-            painter.drawLine(QPointF(ox, y), QPointF(ox + side, y))
 
+        for r in range(n):
+            y0 = oy + r * cell
+            y1 = y0 + cell
+            for c in range(1, n):
+                x = ox + c * cell
+                if c % block_cols == 0:
+                    painter.setPen(thick)
+                    painter.drawLine(QPointF(x, y0), QPointF(x, y1))
+                elif grid[r][c - 1] == grid[r][c]:
+                    painter.setPen(thin)
+                    painter.drawLine(QPointF(x, y0), QPointF(x, y1))
+
+        for c in range(n):
+            x0 = ox + c * cell
+            x1 = x0 + cell
+            for r in range(1, n):
+                y = oy + r * cell
+                if r % block_rows == 0:
+                    painter.setPen(thick)
+                    painter.drawLine(QPointF(x0, y), QPointF(x1, y))
+                elif grid[r - 1][c] == grid[r][c]:
+                    painter.setPen(thin)
+                    painter.drawLine(QPointF(x0, y), QPointF(x1, y))
+
+        painter.setPen(thick)
         painter.setBrush(Qt.NoBrush)
         painter.drawRect(QRectF(ox, oy, side, side))
 
     def _draw_cage_borders(self, painter, ox, oy, cell):
-        """Draw dashed borders between cells of different cages."""
+        """Dashed borders between cages, away from solid grid lines."""
         if self._puzzle is None:
             return
         n = self._puzzle.size
+        block_rows = self._puzzle.num_rows_nonet or 3
+        block_cols = self._puzzle.num_cols_nonet or 3
+        grid = self._puzzle.cage_grid
+
         pen = QPen(self._cage_border_color, self._cage_border_width)
         pen.setCapStyle(Qt.FlatCap)
         pen.setDashPattern(self._cage_dash_pattern)
         painter.setPen(pen)
 
-        # For each cell, check if each edge needs a cage border
         for r in range(n):
             for c in range(n):
-                my_cage = self._puzzle.cage_grid[r][c]
+                my_cage = grid[r][c]
 
-                # Top edge
-                if r == 0 or self._puzzle.cage_grid[r - 1][c] != my_cage:
-                    painter.drawLine(
-                        QPointF(ox + c * cell, oy + r * cell),
-                        QPointF(ox + (c + 1) * cell, oy + r * cell)
-                    )
-                # Bottom edge
-                if r == n - 1 or self._puzzle.cage_grid[r + 1][c] != my_cage:
-                    painter.drawLine(
-                        QPointF(ox + c * cell, oy + (r + 1) * cell),
-                        QPointF(ox + (c + 1) * cell, oy + (r + 1) * cell)
-                    )
-                # Left edge
-                if c == 0 or self._puzzle.cage_grid[r][c - 1] != my_cage:
-                    painter.drawLine(
-                        QPointF(ox + c * cell, oy + r * cell),
-                        QPointF(ox + c * cell, oy + (r + 1) * cell)
-                    )
-                # Right edge
-                if c == n - 1 or self._puzzle.cage_grid[r][c + 1] != my_cage:
-                    painter.drawLine(
-                        QPointF(ox + (c + 1) * cell, oy + r * cell),
-                        QPointF(ox + (c + 1) * cell, oy + (r + 1) * cell)
-                    )
+                # Horizontal edges (skip the outer frame and block lines)
+                if 0 < r < n and r % block_rows != 0:
+                    if grid[r - 1][c] != my_cage:
+                        painter.drawLine(
+                            QPointF(ox + c * cell, oy + r * cell),
+                            QPointF(ox + (c + 1) * cell, oy + r * cell)
+                        )
+
+                # Vertical edges
+                if 0 < c < n and c % block_cols != 0:
+                    if grid[r][c - 1] != my_cage:
+                        painter.drawLine(
+                            QPointF(ox + c * cell, oy + r * cell),
+                            QPointF(ox + c * cell, oy + (r + 1) * cell)
+                        )
+
+                # Bottom and right outer frame stays solid, nothing to do
 
     def _draw_cage_sums(self, painter, ox, oy, cell):
         """Draw cage sum numbers at the top-left of the first cell of each cage."""
@@ -559,43 +608,9 @@ class KillerSudokuBoard(QWidget):
                 val = self.user_value(r, c)
 
                 if val == 0:
-                    # Pencil candidates: layout and size depend on how many
                     digits = self._pencils[r][c]
                     if digits:
-                        # Leave the top band free where the cage sum is drawn
-                        top_pad = cell * 0.26 if (r, c) in self._sum_cells else 0.0
-                        avail_h = cell - top_pad
-
-                        count = len(digits)
-                        if count <= 2:
-                            cols, rows, max_frac = 2, 1, 0.34
-                        elif count <= 4:
-                            cols, rows, max_frac = 2, 2, 0.28
-                        elif count <= 6:
-                            cols, rows, max_frac = 3, 2, 0.24
-                        else:
-                            cols, rows, max_frac = 3, 3, 0.21
-
-                        slot_w = cell / cols
-                        slot_h = avail_h / rows
-                        px = min(int(min(slot_w, slot_h) * 0.8), int(cell * max_frac))
-
-                        pencil_font = QFont()
-                        pencil_font.setPixelSize(max(5, px))
-                        painter.setFont(pencil_font)
-                        painter.setPen(self._pencil_color)
-
-                        ordered = sorted(digits)
-                        for ri in range(rows):
-                            row_digits = ordered[ri * cols:(ri + 1) * cols]
-                            if not row_digits:
-                                break
-                            row_w = slot_w * len(row_digits)
-                            start_x = ox + c * cell + (cell - row_w) / 2
-                            y = oy + r * cell + top_pad + ri * slot_h
-                            for ci, d in enumerate(row_digits):
-                                sub = QRectF(start_x + ci * slot_w, y, slot_w, slot_h)
-                                painter.drawText(sub, Qt.AlignCenter, str(d))
+                        self._draw_pencils(painter, r, c, ox, oy, cell, digits)
                     continue
 
                 if self._fixed_mask[r][c]:
