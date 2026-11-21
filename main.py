@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QPoint, QSize, Signal, QEvent, QObject, QTimer
+from PySide6.QtCore import Qt, QPoint, QSize, Signal, QEvent, QObject
 from PySide6.QtGui import (
     QAction, QColor, QIcon, QKeySequence, QPainter, QCursor, QPixmap, QShortcut,
 )
@@ -350,6 +350,9 @@ class TransparentSudokuWindow(QMainWindow):
         shortcut = QShortcut(QKeySequence("Ctrl+H"), self)
         shortcut.activated.connect(self._toggle_visible)
 
+        undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
+        undo_shortcut.activated.connect(self._undo)
+
     def _toggle_visible(self):
         if self.isVisible():
             self.hide()
@@ -441,24 +444,27 @@ class TransparentSudokuWindow(QMainWindow):
         if self._puzzle is None:
             return
         wrong, filled, total = self.board.check_board()
+
         if wrong:
-            self._flash(f"{wrong} wrong cell(s) in red")
+            QMessageBox.warning(
+                self, "Check result",
+                f"{wrong} wrong cell(s).\n\nNothing is highlighted — use Ctrl+Z to undo."
+            )
         elif filled == total:
-            self._flash("Solved! ✓")
+            QMessageBox.information(self, "Check result", "Solved! Everything is correct.")
+        elif filled == 0:
+            QMessageBox.information(self, "Check result", "Nothing entered yet.")
         else:
-            self._flash(f"{filled} filled OK · {total - filled} left")
+            QMessageBox.information(
+                self, "Check result",
+                f"All {filled} filled cell(s) are correct.\n{total - filled} still empty."
+            )
 
-    def _flash(self, msg: str, is_error: bool = False):
-        """Briefly show a message in the title bar, then restore the puzzle id."""
-        prefix = "⚠" if is_error else "✓"
-        self.title_label.setText(f"{prefix} {msg}")
-        self.title_label.setToolTip(msg)
-        QTimer.singleShot(4000, self._restore_title)
-        print(f"[Check] {msg}")
-
-    def _restore_title(self):
-        if self._puzzle:
-            self.title_label.setText(f"#{self._puzzle.puzzle_id}")
+    def _undo(self):
+        if self.board.undo():
+            self._status("Undone")
+        else:
+            self._status("Nothing to undo")
 
     # ---- Color/settings application ----
 

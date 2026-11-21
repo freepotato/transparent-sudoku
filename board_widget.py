@@ -28,11 +28,6 @@ class KillerSudokuBoard(QWidget):
         self._dragging = False
         self._fixed_mask: List[List[bool]] = []  # True for given cells
 
-        # Results are only shown after an explicit check
-        self._checked_wrong: Set[Tuple[int, int]] = set()
-        self._checked_cage_bad: Set[int] = set()
-        self._checked_cage_done: Set[int] = set()
-
         # Typing session: a single digit commits, several digits become pencils
         self._typing_key = None
         self._typing_digits: List[int] = []
@@ -40,6 +35,18 @@ class KillerSudokuBoard(QWidget):
         self._type_timer.setSingleShot(True)
         self._type_timer.setInterval(900)
         self._type_timer.timeout.connect(self._end_typing_session)
+
+        # Undo history for committed values only (pencil marks are not recorded)
+        self._undo_stack: List[List[Tuple[int, int, int]]] = []
+
+        # Cage combination panel pagination
+        self._combo_page = 0
+        self._combo_pages = 1
+        self._combo_sig = None
+        self._combo_prev_rect: Optional[QRectF] = None
+        self._combo_next_rect: Optional[QRectF] = None
+        self._combo_arrow_color = QColor(235, 235, 235, 235)
+        self._combo_arrow_disabled_color = QColor(150, 150, 150, 110)
 
         # Visual settings
         self._bg_color = QColor(0, 0, 0, 0)  # fully transparent bg
@@ -49,9 +56,6 @@ class KillerSudokuBoard(QWidget):
         self._fixed_number_color = QColor(20, 20, 20, 255)
         self._pencil_color = QColor(110, 110, 110, 200)
         self._cage_sum_color = QColor(160, 160, 160, 210)
-        self._cage_done_color = QColor(40, 160, 80, 230)
-        self._cage_error_color = QColor(200, 60, 60, 230)
-        self._check_error_color = QColor(200, 60, 60, 255)
         self._selected_color = QColor(100, 150, 255, 100)
         self._highlight_color = QColor(200, 220, 255, 60)
         self._same_digit_color = QColor(255, 200, 80, 75)
@@ -77,7 +81,7 @@ class KillerSudokuBoard(QWidget):
         self._fixed_mask = [[puzzle.cells[r][c] != 0 for c in range(size)] for r in range(size)]
         self._selected_cells = []
         self._anchor_cell = None
-        self._reset_check_state()
+        self._undo_stack.clear()
         self.update()
 
     def set_background_color(self, color: QColor):
@@ -118,7 +122,6 @@ class KillerSudokuBoard(QWidget):
             return
         self._user_values[row][col] = value
         self._pencils[row][col].clear()
-        self._reset_check_state()
         self.update()
 
     def set_pencils(self, row: int, col: int, digits: Set[int]):
@@ -127,7 +130,6 @@ class KillerSudokuBoard(QWidget):
             return
         self._user_values[row][col] = 0
         self._pencils[row][col] = set(digits)
-        self._reset_check_state()
         self.update()
 
     def pencils(self, row: int, col: int) -> Set[int]:
@@ -138,19 +140,33 @@ class KillerSudokuBoard(QWidget):
             size = self._puzzle.size
             self._user_values = [[0] * size for _ in range(size)]
             self._pencils = [[set() for _ in range(size)] for _ in range(size)]
-            self._reset_check_state()
+            self._undo_stack.clear()
             self.update()
 
-    def check_board(self) -> Tuple[int, int, int]:
-        """Validate entries against the solution and highlight mistakes.
+    def undo(self) -> bool:
+        """Undo the last committed value entry (pencil marks are not tracked)."""
+        if not self._undo_stack:
+            return False
+        group = self._undo_stack.pop()
+        for r, c, previous in group:
+            self._user_values[r][c] = previous
+            self._pencils[r][c].clear()
+        self.update()
+        return True
 
-        Results stay invisible until this is called. Returns
-        (wrong cells, filled cells, editable cells).
+    def push_undo(self, changes: List[Tuple[int, int, int]]):
+        if changes:
+            self._undo_stack.append(changes)
+
+    def check_board(self) -> Tuple[int, int, int]:
+        """Validate entries against the solution and report only counts.
+
+        Nothing is drawn or coloured: the caller decides how to surface the
+        result. Returns (wrong cells, filled cells, editable cells).
         """
         if self._puzzle is None:
             return (0, 0, 0)
 
-        self._reset_check_state()
         n = self._puzzle.size
         solution = self._puzzle.solution
         wrong = filled = total = 0
@@ -166,23 +182,10 @@ class KillerSudokuBoard(QWidget):
                 filled += 1
                 if solution is not None:
                     if solution[r][c] != value:
-                        self._checked_wrong.add((r, c))
                         wrong += 1
                 elif self._has_conflict(r, c, value):
-                    self._checked_wrong.add((r, c))
                     wrong += 1
 
-        # Cage-level verdicts, also only on demand
-        for cage in self._puzzle.cages:
-            values = [self.user_value(r, c) for r, c in cage.cells]
-            if any(v == 0 for v in values):
-                continue
-            if sum(values) == cage.sum_value:
-                self._checked_cage_done.add(cage.index)
-            else:
-                self._checked_cage_bad.add(cage.index)
-
-        self.update()
         return (wrong, filled, total)
 
     def _has_conflict(self, row: int, col: int, value: int) -> bool:
@@ -205,11 +208,6 @@ class KillerSudokuBoard(QWidget):
             if (r2, c2) != (row, col) and self.user_value(r2, c2) == value:
                 return True
         return False
-
-    def _reset_check_state(self):
-        self._checked_wrong.clear()
-        self._checked_cage_bad.clear()
-        self._checked_cage_done.clear()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -350,6 +348,9 @@ class KillerSudokuBoard(QWidget):
 
         Drawn as a tiny box in the bottom-left corner of the board.
         """
+        self._combo_prev_rect = None
+        self._combo_next_rect = None
+
         cages = self._complete_cages()
         if len(cages) != 1:
             return
@@ -362,14 +363,28 @@ class KillerSudokuBoard(QWidget):
         painter.setFont(font)
         metrics = QFontMetrics(font)
 
-        max_lines = 5
-        shown = lines[:max_lines]
-        if len(lines) > max_lines:
-            shown.append(f"… +{len(lines) - max_lines}")
+        per_page = 4
+        pages = max(1, (len(lines) + per_page - 1) // per_page)
+
+        signature = (cage.index, tuple(sorted(self._selected_cells)), tuple(lines))
+        if signature != self._combo_sig:
+            self._combo_sig = signature
+            self._combo_page = 0
+        self._combo_page = min(self._combo_page, pages - 1)
+        self._combo_pages = pages
+
+        page = self._combo_page
+        shown = lines[page * per_page:(page + 1) * per_page]
 
         line_h = metrics.height() + 1
-        box_w = max(metrics.horizontalAdvance(t) for t in shown) + 8
-        box_h = line_h * len(shown) + 4
+        nav_h = line_h + 2
+
+        text_w = max(metrics.horizontalAdvance(t) for t in shown)
+        arrow_w = max(14, metrics.horizontalAdvance("›") + 8)
+        nav_w = arrow_w * 2 + metrics.horizontalAdvance(f"{page + 1}/{pages}") + 8
+
+        box_w = max(text_w, nav_w) + 8
+        box_h = line_h * len(shown) + nav_h + 6
 
         n = self._puzzle.size
         box_x = ox + 3
@@ -379,12 +394,37 @@ class KillerSudokuBoard(QWidget):
         painter.setBrush(QColor(30, 30, 30, 140))
         painter.drawRoundedRect(QRectF(box_x, box_y, box_w, box_h), 3, 3)
         painter.setBrush(Qt.NoBrush)
-        painter.setPen(QColor(240, 240, 240, 225))
 
+        # Combination lines
+        painter.setPen(QColor(240, 240, 240, 225))
         y = box_y + 2 + metrics.ascent()
         for line in shown:
             painter.drawText(QPointF(box_x + 4, y), line)
             y += line_h
+
+        # Pagination row: ‹ 1/2 ›
+        nav_y = y + 1
+        nav_bottom = box_y + box_h - 3
+
+        prev_rect = QRectF(box_x + 3, nav_y, arrow_w, nav_bottom - nav_y)
+        next_rect = QRectF(box_x + box_w - arrow_w - 3, nav_y, arrow_w, nav_bottom - nav_y)
+        self._combo_prev_rect = prev_rect if page > 0 else None
+        self._combo_next_rect = next_rect if page < pages - 1 else None
+
+        can_prev = page > 0
+        can_next = page < pages - 1
+
+        painter.setPen(self._combo_arrow_color if can_prev else self._combo_arrow_disabled_color)
+        painter.drawText(prev_rect, Qt.AlignCenter, "‹")
+
+        painter.setPen(self._combo_arrow_color if can_next else self._combo_arrow_disabled_color)
+        painter.drawText(next_rect, Qt.AlignCenter, "›")
+
+        painter.setPen(self._combo_arrow_disabled_color)
+        painter.drawText(
+            QRectF(prev_rect.right(), nav_y, next_rect.left() - prev_rect.right(), nav_bottom - nav_y),
+            Qt.AlignCenter, f"{page + 1}/{pages}",
+        )
 
     def _cage_combination_lines(self, cage) -> List[str]:
         """All distinct-digit combinations that still fill the cage."""
@@ -476,14 +516,7 @@ class KillerSudokuBoard(QWidget):
 
                 sum_text = str(cage.sum_value)
 
-                # Verdicts appear only after the user presses Check
-                if ci in self._checked_cage_bad:
-                    painter.setPen(self._cage_error_color)
-                elif ci in self._checked_cage_done:
-                    painter.setPen(self._cage_done_color)
-                else:
-                    painter.setPen(self._cage_sum_color)
-
+                painter.setPen(self._cage_sum_color)
                 painter.drawText(QPointF(tx, ty), sum_text)
 
     def _draw_numbers(self, painter, ox, oy, cell):
@@ -531,11 +564,7 @@ class KillerSudokuBoard(QWidget):
                     painter.setPen(self._fixed_number_color)
                 else:
                     painter.setFont(user_font)
-                    painter.setPen(
-                        self._check_error_color
-                        if (r, c) in self._checked_wrong
-                        else self._number_color
-                    )
+                    painter.setPen(self._number_color)
 
                 text_rect = QRectF(ox + c * cell, oy + r * cell, cell, cell)
                 painter.drawText(text_rect, Qt.AlignCenter, str(val))
@@ -568,7 +597,20 @@ class KillerSudokuBoard(QWidget):
             super().mousePressEvent(event)
             return
 
-        cell = self._cell_from_pos(event.position())
+        # Pagination arrows on the cage-combination panel
+        pos = event.position()
+        if self._combo_prev_rect and self._combo_prev_rect.contains(pos):
+            self._combo_page = max(0, self._combo_page - 1)
+            self.update()
+            event.accept()
+            return
+        if self._combo_next_rect and self._combo_next_rect.contains(pos):
+            self._combo_page = min(self._combo_pages - 1, self._combo_page + 1)
+            self.update()
+            event.accept()
+            return
+
+        cell = self._cell_from_pos(pos)
         if cell is not None:
             self._selected_cells = [cell]
             self._anchor_cell = cell
@@ -623,9 +665,12 @@ class KillerSudokuBoard(QWidget):
                 super().keyPressEvent(event)
                 return
             self._end_typing_session()
+            changes = []
             for r, c in self._selected_cells or [(row, col)]:
+                changes.append((r, c, self._user_values[r][c]))
                 self.set_user_value(r, c, 0)
                 self.value_entered.emit(r, c, 0)
+            self.push_undo(changes)
             event.accept()
             return
 
@@ -672,9 +717,12 @@ class KillerSudokuBoard(QWidget):
         self._typing_key = signature
 
         if len(self._typing_digits) == 1:
+            changes = []
             for r, c in cells:
+                changes.append((r, c, self._user_values[r][c]))
                 self.set_user_value(r, c, digit)
                 self.value_entered.emit(r, c, digit)
+            self.push_undo(changes)
         else:
             digits = set(self._typing_digits)
             for r, c in cells:
