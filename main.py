@@ -44,6 +44,7 @@ class SettingsPanel(QWidget):
     colors_changed = Signal()
     transparency_changed = Signal(float)
     cell_size_changed = Signal(int)
+    puzzle_requested = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -74,11 +75,31 @@ class SettingsPanel(QWidget):
         row2 = QHBoxLayout()
         row2.addWidget(QLabel("Cell size:"))
         self.cell_size_slider = QSlider(Qt.Horizontal)
-        self.cell_size_slider.setRange(25, 80)
-        self.cell_size_slider.setValue(45)
+        self.cell_size_slider.setRange(
+            KillerSudokuBoard.MIN_CELL_SIZE, KillerSudokuBoard.MAX_CELL_SIZE
+        )
+        self.cell_size_slider.setValue(KillerSudokuBoard.DEFAULT_CELL_SIZE)
         self.cell_size_slider.valueChanged.connect(self.cell_size_changed.emit)
         row2.addWidget(self.cell_size_slider, 1)
         layout.addLayout(row2)
+
+        # Jump to a specific puzzle number
+        row3 = QHBoxLayout()
+        row3.addWidget(QLabel("Puzzle #:"))
+        self.puzzle_id_input = QLineEdit()
+        self.puzzle_id_input.setPlaceholderText("872")
+        self.puzzle_id_input.setFixedWidth(70)
+        self.puzzle_id_input.setStyleSheet(
+            "border: 1px solid rgba(150,150,150,90); padding: 2px 4px; "
+            "background: rgba(255,255,255,35); color: rgba(90,90,90,200);"
+        )
+        self.puzzle_id_input.returnPressed.connect(self._emit_puzzle_request)
+        row3.addWidget(self.puzzle_id_input)
+        btn_go = QPushButton("Load")
+        btn_go.clicked.connect(self._emit_puzzle_request)
+        row3.addWidget(btn_go)
+        row3.addStretch(1)
+        layout.addLayout(row3)
 
         # Color buttons
         form = QFormLayout()
@@ -108,6 +129,14 @@ class SettingsPanel(QWidget):
         layout.addWidget(hint)
 
         self._update_button_colors()
+
+    def _emit_puzzle_request(self):
+        text = self.puzzle_id_input.text().strip()
+        if text.isdigit():
+            self.puzzle_requested.emit(int(text))
+
+    def set_puzzle_id(self, puzzle_id: int):
+        self.puzzle_id_input.setText(str(puzzle_id))
 
     def _pick_color(self, btn):
         current = self._color_from_button(btn)
@@ -239,25 +268,6 @@ class TransparentSudokuWindow(QMainWindow):
         btn_today.clicked.connect(self._load_today_puzzle)
         title_bar.addWidget(btn_today)
 
-        lbl_hash = QLabel("#")
-        lbl_hash.setCursor(Qt.SizeAllCursor)
-        lbl_hash.installEventFilter(self._title_drag)
-        title_bar.addWidget(lbl_hash)
-        self.puzzle_id_input = QLineEdit()
-        self.puzzle_id_input.setFixedWidth(55)
-        self.puzzle_id_input.setPlaceholderText("872")
-        self.puzzle_id_input.setStyleSheet(
-            "border: 1px solid rgba(150,150,150,90); padding: 2px 4px; "
-            "background: rgba(255,255,255,35); color: rgba(90,90,90,200);"
-        )
-        self.puzzle_id_input.returnPressed.connect(self._load_puzzle_by_id)
-        title_bar.addWidget(self.puzzle_id_input)
-
-        btn_go = QPushButton("Go")
-        btn_go.setStyleSheet(self._small_btn_style())
-        btn_go.clicked.connect(self._load_puzzle_by_id)
-        title_bar.addWidget(btn_go)
-
         btn_clear = QPushButton("↺")
         btn_clear.setToolTip("Clear all user entries")
         btn_clear.setStyleSheet(self._small_btn_style())
@@ -269,6 +279,18 @@ class TransparentSudokuWindow(QMainWindow):
         btn_check.setStyleSheet(self._small_btn_style())
         btn_check.clicked.connect(self._check_board)
         title_bar.addWidget(btn_check)
+
+        btn_zoom_out = QPushButton("−")
+        btn_zoom_out.setToolTip("Zoom out")
+        btn_zoom_out.setStyleSheet(self._small_btn_style())
+        btn_zoom_out.clicked.connect(lambda: self._zoom_step(-1))
+        title_bar.addWidget(btn_zoom_out)
+
+        btn_zoom_in = QPushButton("+")
+        btn_zoom_in.setToolTip("Zoom in")
+        btn_zoom_in.setStyleSheet(self._small_btn_style())
+        btn_zoom_in.clicked.connect(lambda: self._zoom_step(1))
+        title_bar.addWidget(btn_zoom_in)
 
         btn_settings = QPushButton("⚙")
         btn_settings.setToolTip("Toggle settings")
@@ -289,11 +311,18 @@ class TransparentSudokuWindow(QMainWindow):
         title_bar.addWidget(btn_close)
 
         root_layout.addLayout(title_bar)
+        # Lower bound for the window width: the title bar cannot compress
+        # below its own content.  Cached here because the layout minimum is
+        # dominated by the board later on.
+        title_bar.activate()
+        self._title_bar_min_w = title_bar.minimumSize().width()
 
         # Board
         self.board = KillerSudokuBoard()
         self.board.cell_clicked.connect(self._on_cell_clicked)
-        root_layout.addWidget(self.board, 1)
+        # The board is pinned to an exact square by cell size; centre it so
+        # any leftover width stays fully transparent instead of being filled.
+        root_layout.addWidget(self.board, 1, Qt.AlignHCenter)
 
         # Settings panel (hidden by default)
         self.settings_panel = SettingsPanel()
@@ -301,6 +330,7 @@ class TransparentSudokuWindow(QMainWindow):
         self.settings_panel.colors_changed.connect(self._apply_colors)
         self.settings_panel.transparency_changed.connect(self._apply_transparency)
         self.settings_panel.cell_size_changed.connect(self._apply_cell_size)
+        self.settings_panel.puzzle_requested.connect(self._load_puzzle_by_id_int)
         root_layout.addWidget(self.settings_panel)
 
         # Apply initial colors
@@ -387,7 +417,7 @@ class TransparentSudokuWindow(QMainWindow):
         """Plug a puzzle into the UI and update the title / cache."""
         self._puzzle = puzzle
         self.board.set_puzzle(puzzle)
-        self.puzzle_id_input.setText(str(puzzle.puzzle_id))
+        self.settings_panel.set_puzzle_id(puzzle.puzzle_id)
         diff = "★" * puzzle.difficulty
         self.title_label.setText(f"#{puzzle.puzzle_id}")
         self.title_label.setToolTip(
@@ -395,6 +425,7 @@ class TransparentSudokuWindow(QMainWindow):
             f"{diff} · {len(puzzle.cages)} cages"
         )
         self._save_cache()
+        self._resize_for_board()
 
     def _load_today_puzzle(self):
         self._status("Loading today's puzzle...")
@@ -418,7 +449,7 @@ class TransparentSudokuWindow(QMainWindow):
             self._error(error_msg)
 
     def _load_puzzle_by_id(self):
-        text = self.puzzle_id_input.text().strip()
+        text = self.settings_panel.puzzle_id_input.text().strip()
         if not text.isdigit():
             self._error("Please enter a valid puzzle number")
             return
@@ -480,15 +511,57 @@ class TransparentSudokuWindow(QMainWindow):
 
     def _apply_cell_size(self, value: int):
         self.board.set_cell_size(value)
+        self._resize_for_board()
+
+    def _zoom_step(self, direction: int):
+        """Zoom the board in/out by one step, clamped to the safe range."""
+        step = 4
+        current = self.board.cell_size()
+        target = max(
+            KillerSudokuBoard.MIN_CELL_SIZE,
+            min(KillerSudokuBoard.MAX_CELL_SIZE, current + direction * step),
+        )
+        if target == current:
+            limit = "min" if direction < 0 else "max"
+            self._status(f"Zoom {limit} reached ({current}px)")
+            return
+        self.board.set_cell_size(target)
+        # Sync the settings slider without re-triggering the resize
+        self.settings_panel.cell_size_slider.blockSignals(True)
+        self.settings_panel.cell_size_slider.setValue(target)
+        self.settings_panel.cell_size_slider.blockSignals(False)
+        self._resize_for_board()
+
+    def _resize_for_board(self):
+        """Grow / shrink the window so the board always fits exactly."""
+        if self._puzzle is None:
+            self.resize(450, 520)
+            return
+        n = self._puzzle.size
+        side = self.board.cell_size() * n + 2
+        min_w = self._title_bar_min_w
+        if self._settings_visible:
+            min_w = max(min_w, self.settings_panel.sizeHint().width())
+        w = max(side + 24, min_w + 24)  # + root layout horizontal margins
+        h = side + 26 + 4 + 12 + 12  # title bar + spacing + top/bottom margins
+        if self._settings_visible:
+            h += self.settings_panel.sizeHint().height() + 4
+        # Recompute the layout minimum first: the window cannot be resized
+        # below it, and the board's fixed size just changed.
+        layout = self.centralWidget().layout()
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
+        # An explicit minimum overrides the layout's automatic one, which
+        # QMainWindow otherwise keeps pinned at the largest size ever used —
+        # that would block zooming back out.
+        self.setMinimumSize(w, 0)
+        self.resize(w, h)
 
     def _toggle_settings(self):
         self._settings_visible = not self._settings_visible
         self.settings_panel.setVisible(self._settings_visible)
-        # Resize to accommodate
-        if self._settings_visible:
-            self.resize(max(self.width(), 450), self.height() + 150)
-        else:
-            self.resize(max(self.width(), 450), 520)
+        self._resize_for_board()
 
     # ---- Mouse dragging for frameless window ----
 

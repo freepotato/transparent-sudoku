@@ -4,7 +4,7 @@ from itertools import combinations
 from typing import List, Optional, Set, Tuple
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 from puzzle_fetcher import KillerSudokuPuzzle
@@ -17,6 +17,12 @@ class KillerSudokuBoard(QWidget):
     cell_clicked = Signal(int, int)
     # Signal emitted when a value is entered on the selected cell
     value_entered = Signal(int, int, int)  # row, col, value (0=clear)
+
+    # Zoom limits: below MIN the cage sums / candidates get unreadable,
+    # above MAX the window stops being a discreet "small window".
+    MIN_CELL_SIZE = 24
+    MAX_CELL_SIZE = 64
+    DEFAULT_CELL_SIZE = 40
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -89,6 +95,7 @@ class KillerSudokuBoard(QWidget):
         self._undo_stack.clear()
         self._end_typing_session()
         self._sum_cells = self._compute_sum_cells()
+        self._apply_size()
         self.update()
 
     def _compute_sum_cells(self) -> Set[Tuple[int, int]]:
@@ -115,9 +122,20 @@ class KillerSudokuBoard(QWidget):
         self.update()
 
     def set_cell_size(self, size: int):
-        self._cell_size = max(20, size)
+        self._cell_size = max(self.MIN_CELL_SIZE, min(self.MAX_CELL_SIZE, size))
+        self._apply_size()
         self.updateGeometry()
         self.update()
+
+    def _apply_size(self):
+        """Pin the widget to an exact square so painting matches cell size."""
+        if self._puzzle is None:
+            return
+        side = self._cell_size * self._puzzle.size + 2
+        self.setFixedSize(side, side)
+
+    def cell_size(self) -> int:
+        return self._cell_size
 
     def set_font_scale(self, number_scale: float = 0.55, cage_sum_scale: float = 0.35):
         self._number_font_scale = number_scale
