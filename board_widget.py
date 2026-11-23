@@ -47,11 +47,9 @@ class KillerSudokuBoard(QWidget):
         self._cage_border_color = QColor(165, 165, 165, 190)
         self._cage_border_width = 1.0
 
-        # Cell grid: thin solid lines, thicker solid lines between 3x3 blocks
-        self._grid_color = QColor(140, 140, 140, 110)
-        self._grid_width = 0.7
-        self._block_color = QColor(110, 110, 110, 180)
-        self._block_width = 1.6
+        # Cell grid: only the 3x3 block separators and the outer frame are solid
+        self._block_color = QColor(110, 110, 110, 165)
+        self._block_width = 1.0
         self._cage_dash_pattern = [4, 3]
         self._number_color = QColor(20, 20, 20, 255)
         self._fixed_number_color = QColor(20, 20, 20, 255)
@@ -275,9 +273,10 @@ class KillerSudokuBoard(QWidget):
                         cr = QRectF(offset_x + c * cell, offset_y + r * cell, cell, cell)
                         painter.fillRect(cr, self._highlight_color)
 
-        # Draw cell grid, then dashed cage borders over it
-        self._draw_grid(painter, offset_x, offset_y, cell)
+        # Dashed cage borders first, solid block lines on top: the two line
+        # styles never share a pixel, so the solids always stay crisp.
         self._draw_cage_borders(painter, offset_x, offset_y, cell)
+        self._draw_grid(painter, offset_x, offset_y, cell)
 
         # Draw cage sums
         self._draw_cage_sums(painter, offset_x, offset_y, cell)
@@ -470,85 +469,112 @@ class KillerSudokuBoard(QWidget):
         return [" ".join(str(d) for d in combo) for combo in combos] or ["—"]
 
     def _draw_grid(self, painter, ox, oy, cell):
-        """Solid cell grid with heavier separators between 3x3 blocks.
+        """Solid lines: the outer frame and the 3x3 block separators only.
 
-        Edges that belong to a cage boundary are left empty here so the
-        dashed cage border is the only line drawn there.
+        No thin lines between individual cells. Cell divisions come from the
+        dashed cage borders, exactly like the reference board, so solid and
+        dashed lines never overlap.
         """
         if self._puzzle is None:
             return
         n = self._puzzle.size
         block_rows = self._puzzle.num_rows_nonet or 3
         block_cols = self._puzzle.num_cols_nonet or 3
-        grid = self._puzzle.cage_grid
         side = n * cell
 
-        thin = QPen(self._grid_color, self._grid_width)
         thick = QPen(self._block_color, self._block_width)
-
-        for r in range(n):
-            y0 = oy + r * cell
-            y1 = y0 + cell
-            for c in range(1, n):
-                x = ox + c * cell
-                if c % block_cols == 0:
-                    painter.setPen(thick)
-                    painter.drawLine(QPointF(x, y0), QPointF(x, y1))
-                elif grid[r][c - 1] == grid[r][c]:
-                    painter.setPen(thin)
-                    painter.drawLine(QPointF(x, y0), QPointF(x, y1))
-
-        for c in range(n):
-            x0 = ox + c * cell
-            x1 = x0 + cell
-            for r in range(1, n):
-                y = oy + r * cell
-                if r % block_rows == 0:
-                    painter.setPen(thick)
-                    painter.drawLine(QPointF(x0, y), QPointF(x1, y))
-                elif grid[r - 1][c] == grid[r][c]:
-                    painter.setPen(thin)
-                    painter.drawLine(QPointF(x0, y), QPointF(x1, y))
-
+        thick.setCapStyle(Qt.FlatCap)
         painter.setPen(thick)
         painter.setBrush(Qt.NoBrush)
-        painter.drawRect(QRectF(ox, oy, side, side))
+
+        # Half-pixel alignment keeps 1px strokes crisp instead of blurring
+        # across two pixels.
+        for r in range(1, n):
+            if r % block_rows:
+                continue
+            y = oy + r * cell + 0.5
+            painter.drawLine(QPointF(ox, y), QPointF(ox + side, y))
+
+        for c in range(1, n):
+            if c % block_cols:
+                continue
+            x = ox + c * cell + 0.5
+            painter.drawLine(QPointF(x, oy), QPointF(x, oy + side))
+
+        # Outer frame: keep the whole stroke inside the widget so it is not
+        # clipped in half by the board edge.
+        painter.drawRect(QRectF(ox + 0.5, oy + 0.5, side - 1.0, side - 1.0))
 
     def _draw_cage_borders(self, painter, ox, oy, cell):
-        """Dashed borders between cages, away from solid grid lines."""
+        """Dashed cage borders.
+
+        Drawn only on plain cell edges: edges that sit on a 3x3 block boundary
+        or on the outer frame are already covered by the solid lines, so a
+        dash never lands on top of a solid stroke.
+        """
         if self._puzzle is None:
             return
-        n = self._puzzle.size
-        block_rows = self._puzzle.num_rows_nonet or 3
-        block_cols = self._puzzle.num_cols_nonet or 3
-        grid = self._puzzle.cage_grid
 
         pen = QPen(self._cage_border_color, self._cage_border_width)
         pen.setCapStyle(Qt.FlatCap)
         pen.setDashPattern(self._cage_dash_pattern)
         painter.setPen(pen)
 
-        for r in range(n):
-            for c in range(n):
-                my_cage = grid[r][c]
+        h_runs, v_runs = self._cage_border_runs()
 
-                # Horizontal edges (skip the outer frame and block lines)
-                if 0 < r < n and r % block_rows != 0:
-                    if grid[r - 1][c] != my_cage:
-                        painter.drawLine(
-                            QPointF(ox + c * cell, oy + r * cell),
-                            QPointF(ox + (c + 1) * cell, oy + r * cell)
-                        )
+        # Half-pixel alignment matches the solid lines, so a dash stays crisp
+        # and stops cleanly at a block separator instead of bleeding into it.
+        for r, spans in h_runs.items():
+            y = oy + r * cell + 0.5
+            for c0, c1 in spans:
+                painter.drawLine(QPointF(ox + c0 * cell, y),
+                                 QPointF(ox + c1 * cell, y))
 
-                # Vertical edges
-                if 0 < c < n and c % block_cols != 0:
-                    if grid[r][c - 1] != my_cage:
-                        painter.drawLine(
-                            QPointF(ox + c * cell, oy + r * cell),
-                            QPointF(ox + c * cell, oy + (r + 1) * cell)
-                        )
+        for c, spans in v_runs.items():
+            x = ox + c * cell + 0.5
+            for r0, r1 in spans:
+                painter.drawLine(QPointF(x, oy + r0 * cell),
+                                 QPointF(x, oy + r1 * cell))
 
-                # Bottom and right outer frame stays solid, nothing to do
+    def _cage_border_runs(self):
+        """Cage edges grouped into continuous runs.
+
+        Collinear edges of neighbouring cells are merged so one dash sequence
+        spans the whole side instead of restarting at every cell corner.
+        """
+        n = self._puzzle.size
+        block_rows = self._puzzle.num_rows_nonet or 3
+        block_cols = self._puzzle.num_cols_nonet or 3
+        grid = self._puzzle.cage_grid
+
+        h_runs = {}
+        for r in range(1, n):
+            if r % block_rows == 0:
+                continue
+            edges = [c for c in range(n) if grid[r - 1][c] != grid[r][c]]
+            if edges:
+                h_runs[r] = self._merge_spans(edges)
+
+        v_runs = {}
+        for c in range(1, n):
+            if c % block_cols == 0:
+                continue
+            edges = [r for r in range(n) if grid[r][c - 1] != grid[r][c]]
+            if edges:
+                v_runs[c] = self._merge_spans(edges)
+
+        return h_runs, v_runs
+
+    @staticmethod
+    def _merge_spans(indices):
+        """Merge ascending cell indices into [start, end) spans."""
+        spans = []
+        for i in indices:
+            if spans and spans[-1][1] == i:
+                spans[-1][1] = i + 1
+            else:
+                spans.append([i, i + 1])
+        return [(s, e) for s, e in spans]
 
     def _draw_cage_sums(self, painter, ox, oy, cell):
         """Draw cage sum numbers at the top-left of the first cell of each cage."""
