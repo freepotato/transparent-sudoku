@@ -548,8 +548,9 @@ class KillerSudokuBoard(QWidget):
             return
 
         # How far the dashed cage line sits from the thin solid cell line.
-        # 2px keeps them close without aliasing into a fat double stroke.
-        offset = 2.0
+        # 3.5px gives enough clearance so the parallel stroke never aliases
+        # into the solid, even at small cell sizes.
+        offset = 3.5
 
         pen = QPen(self._cage_border_color, self._cage_border_width)
         pen.setCapStyle(Qt.FlatCap)
@@ -581,24 +582,21 @@ class KillerSudokuBoard(QWidget):
 
         Collinear edges of neighbouring cells are merged so one dash sequence
         spans the whole side instead of restarting at every cell corner.
+        Unlike the solid grid, cage dashes run across 3x3 block boundaries
+        and the outer frame too — every cage gets a complete dashed border
+        regardless of where it sits in the grid.
         """
         n = self._puzzle.size
-        block_rows = self._puzzle.num_rows_nonet or 3
-        block_cols = self._puzzle.num_cols_nonet or 3
         grid = self._puzzle.cage_grid
 
         h_runs = {}
         for r in range(1, n):
-            if r % block_rows == 0:
-                continue
             edges = [c for c in range(n) if grid[r - 1][c] != grid[r][c]]
             if edges:
                 h_runs[r] = self._merge_spans(edges)
 
         v_runs = {}
         for c in range(1, n):
-            if c % block_cols == 0:
-                continue
             edges = [r for r in range(n) if grid[r][c - 1] != grid[r][c]]
             if edges:
                 v_runs[c] = self._merge_spans(edges)
@@ -617,7 +615,14 @@ class KillerSudokuBoard(QWidget):
         return [(s, e) for s, e in spans]
 
     def _draw_cage_sums(self, painter, ox, oy, cell):
-        """Draw cage sum numbers at the top-left of the first cell of each cage."""
+        """Draw cage sum numbers at the top-left of the first cell of each cage.
+
+        Before each digit we punch a small transparent hole in the dashed cage
+        border (CompositionMode_Source with full alpha zero) so the dashes
+        never visually cross the number.  The digit is then drawn in its own
+        color on top, so it appears to sit snugly in the border rather than
+        over it.
+        """
         if self._puzzle is None:
             return
         n = self._puzzle.size
@@ -625,9 +630,9 @@ class KillerSudokuBoard(QWidget):
         font = QFont()
         font.setPointSizeF(sum_font_size)
         painter.setFont(font)
-        painter.setPen(self._cage_sum_color)
+        metrics = QFontMetrics(font)
+        pen = painter.pen()
 
-        # Track which cages we've drawn
         drawn_cages = set()
         for r in range(n):
             for c in range(n):
@@ -636,7 +641,6 @@ class KillerSudokuBoard(QWidget):
                     continue
                 drawn_cages.add(ci)
 
-                # Find the top-leftmost cell of this cage
                 top_left = None
                 for cr in range(n):
                     for cc in range(n):
@@ -646,13 +650,35 @@ class KillerSudokuBoard(QWidget):
 
                 cage = self._puzzle.cages[ci]
                 tr, tc = top_left
-                tx = ox + tc * cell + 2
-                ty = oy + tr * cell + sum_font_size + 1
 
                 sum_text = str(cage.sum_value)
+                # Smaller padding than before so the hole hugs the digit
+                pad_x = max(1.0, cell * 0.04)
+                pad_y = max(0.5, cell * 0.025)
+                text_w = metrics.horizontalAdvance(sum_text)
+                text_h = metrics.height()
+                hole_x = ox + tc * cell + 2 - pad_x
+                hole_y = oy + tr * cell + 1 - pad_y
+                hole_w = text_w + pad_x * 2
+                hole_h = text_h + pad_y * 2
 
+                # Punch through the dashed border: the widget background is
+                # fully transparent, so a Source fill with alpha 0 clears the
+                # dashes without painting anything opaque underneath.
+                painter.setCompositionMode(QPainter.CompositionMode_Source)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QColor(0, 0, 0, 0))
+                painter.drawRect(QRectF(hole_x, hole_y, hole_w, hole_h))
+
+                # Restore default compositing and draw the digit on top
+                painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+                painter.setBrush(Qt.NoBrush)
                 painter.setPen(self._cage_sum_color)
+                tx = ox + tc * cell + 2
+                ty = oy + tr * cell + sum_font_size + 1
                 painter.drawText(QPointF(tx, ty), sum_text)
+
+        painter.setPen(pen)
 
     def _draw_numbers(self, painter, ox, oy, cell):
         """Draw committed values and pencil marks."""
