@@ -4,7 +4,7 @@ from itertools import combinations
 from typing import List, Optional, Set, Tuple
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
 from puzzle_fetcher import KillerSudokuPuzzle
@@ -278,10 +278,11 @@ class KillerSudokuBoard(QWidget):
                         cr = QRectF(offset_x + c * cell, offset_y + r * cell, cell, cell)
                         painter.fillRect(cr, self._highlight_color)
 
-        # Dashed cage borders first, solid block lines on top: the two line
-        # styles never share a pixel, so the solids always stay crisp.
-        self._draw_cage_borders(painter, offset_x, offset_y, cell)
+        # Solid grid first, dashed cage borders on top so dashes are visible
+        # even where they cross a 3x3 block boundary — exactly like the
+        # reference board.
         self._draw_grid(painter, offset_x, offset_y, cell)
+        self._draw_cage_borders(painter, offset_x, offset_y, cell)
 
         # Draw cage sums
         self._draw_cage_sums(painter, offset_x, offset_y, cell)
@@ -530,36 +531,86 @@ class KillerSudokuBoard(QWidget):
 
         painter.drawRect(QRectF(ox + 0.5, oy + 0.5, side - 1.0, side - 1.0))
 
+    def _cage_sum_holes(self, ox, oy, cell):
+        """Return QRectFs that should be excluded from cage-border dashes.
+
+        These are the tiny regions where each cage-sum number sits.  Dashes
+        are clipped around them so they never visually cross the digit, but
+        the thin/thick solid grid under the digit stays intact (unlike the
+        previous hole-punching approach which would have cleared it too).
+        """
+        if self._puzzle is None:
+            return []
+        n = self._puzzle.size
+        sum_font_size = max(5, int(cell * self._cage_sum_font_scale))
+        font = QFont()
+        font.setPointSizeF(sum_font_size)
+        metrics = QFontMetrics(font)
+
+        rects = []
+        drawn_cages = set()
+        for r in range(n):
+            for c in range(n):
+                ci = self._puzzle.cage_grid[r][c]
+                if ci in drawn_cages:
+                    continue
+                drawn_cages.add(ci)
+                cage = self._puzzle.cages[ci]
+
+                top_left = None
+                for cr in range(n):
+                    for cc in range(n):
+                        if self._puzzle.cage_grid[cr][cc] == ci:
+                            if top_left is None or cr < top_left[0] or (
+                                    cr == top_left[0] and cc < top_left[1]):
+                                top_left = (cr, cc)
+
+                tr, tc = top_left
+                text = str(cage.sum_value)
+                pad_x = max(1.0, cell * 0.035)
+                pad_y = max(0.5, cell * 0.025)
+                text_w = metrics.horizontalAdvance(text)
+                text_h = metrics.height()
+                rects.append(QRectF(
+                    ox + tc * cell + 2 - pad_x,
+                    oy + tr * cell + 1 - pad_y,
+                    text_w + pad_x * 2,
+                    text_h + pad_y * 2,
+                ))
+        return rects
+
     def _draw_cage_borders(self, painter, ox, oy, cell):
-        """Dashed cage borders drawn PARALLEL to the thin solid cell grid.
+        """Dashed cage borders drawn on top of the solid grid.
 
-        Every cell edge now has a thin solid line at the boundary itself
-        (see _draw_grid).  Cage borders run alongside that solid — two
-        dashed strokes, offset left/right (vertical) or above/below
-        (horizontal) by a small amount — so solid and dashed are never
-        painted on top of each other.
+        Every cage gets a complete dashed border — it crosses 3x3 block
+        boundaries and the outer frame, and sits above the thin solid cell
+        grid so the cage boundary is always the loudest line where the two
+        coincide.
 
-        Edges that sit on a 3x3 block boundary or the outer frame are
-        already covered by the thick solid line; we skip them here so the
-        dashed cage border never competes visually with the thick block
-        separator.
+        A clip region excludes the small bounding boxes of cage-sum digits
+        so the dashes never visually cross the number, but leaves the solid
+        grid underneath fully intact (no hole-punching).
         """
         if self._puzzle is None:
             return
 
-        # How far the dashed cage line sits from the thin solid cell line.
-        # 3.5px gives enough clearance so the parallel stroke never aliases
-        # into the solid, even at small cell sizes.
-        offset = 3.5
+        offset = 2.5
 
         pen = QPen(self._cage_border_color, self._cage_border_width)
         pen.setCapStyle(Qt.FlatCap)
         pen.setDashPattern(self._cage_dash_pattern)
         painter.setPen(pen)
 
+        # Build clip: whole board minus every cage-sum bounding rect
+        from PySide6.QtGui import QRegion  # local import so the top list stays lean
+
+        region = QRegion(self.rect())
+        for hole in self._cage_sum_holes(ox, oy, cell):
+            region = region.subtracted(QRegion(hole.toRect()))
+        painter.setClipRegion(region)
+
         h_runs, v_runs = self._cage_border_runs()
 
-        # Horizontal cage borders: flanked above and below the thin solid
         for r, spans in h_runs.items():
             y0 = oy + r * cell + 0.5
             for c0, c1 in spans:
@@ -568,7 +619,6 @@ class KillerSudokuBoard(QWidget):
                 painter.drawLine(QPointF(x0, y0 - offset), QPointF(x1, y0 - offset))
                 painter.drawLine(QPointF(x0, y0 + offset), QPointF(x1, y0 + offset))
 
-        # Vertical cage borders: flanked left and right
         for c, spans in v_runs.items():
             x0 = ox + c * cell + 0.5
             for r0, r1 in spans:
@@ -576,6 +626,8 @@ class KillerSudokuBoard(QWidget):
                 y1 = oy + r1 * cell
                 painter.drawLine(QPointF(x0 - offset, y0), QPointF(x0 - offset, y1))
                 painter.drawLine(QPointF(x0 + offset, y0), QPointF(x0 + offset, y1))
+
+        painter.setClipping(False)
 
     def _cage_border_runs(self):
         """Cage edges grouped into continuous runs.
@@ -617,11 +669,9 @@ class KillerSudokuBoard(QWidget):
     def _draw_cage_sums(self, painter, ox, oy, cell):
         """Draw cage sum numbers at the top-left of the first cell of each cage.
 
-        Before each digit we punch a small transparent hole in the dashed cage
-        border (CompositionMode_Source with full alpha zero) so the dashes
-        never visually cross the number.  The digit is then drawn in its own
-        color on top, so it appears to sit snugly in the border rather than
-        over it.
+        Dashes around the number are already clipped in _draw_cage_borders,
+        so the solid grid underneath stays intact and the digit sits in a
+        clean gap in the dashed cage border.
         """
         if self._puzzle is None:
             return
@@ -630,8 +680,7 @@ class KillerSudokuBoard(QWidget):
         font = QFont()
         font.setPointSizeF(sum_font_size)
         painter.setFont(font)
-        metrics = QFontMetrics(font)
-        pen = painter.pen()
+        painter.setPen(self._cage_sum_color)
 
         drawn_cages = set()
         for r in range(n):
@@ -645,40 +694,15 @@ class KillerSudokuBoard(QWidget):
                 for cr in range(n):
                     for cc in range(n):
                         if self._puzzle.cage_grid[cr][cc] == ci:
-                            if top_left is None or cr < top_left[0] or (cr == top_left[0] and cc < top_left[1]):
+                            if top_left is None or cr < top_left[0] or (
+                                    cr == top_left[0] and cc < top_left[1]):
                                 top_left = (cr, cc)
 
                 cage = self._puzzle.cages[ci]
                 tr, tc = top_left
-
-                sum_text = str(cage.sum_value)
-                # Smaller padding than before so the hole hugs the digit
-                pad_x = max(1.0, cell * 0.04)
-                pad_y = max(0.5, cell * 0.025)
-                text_w = metrics.horizontalAdvance(sum_text)
-                text_h = metrics.height()
-                hole_x = ox + tc * cell + 2 - pad_x
-                hole_y = oy + tr * cell + 1 - pad_y
-                hole_w = text_w + pad_x * 2
-                hole_h = text_h + pad_y * 2
-
-                # Punch through the dashed border: the widget background is
-                # fully transparent, so a Source fill with alpha 0 clears the
-                # dashes without painting anything opaque underneath.
-                painter.setCompositionMode(QPainter.CompositionMode_Source)
-                painter.setPen(Qt.NoPen)
-                painter.setBrush(QColor(0, 0, 0, 0))
-                painter.drawRect(QRectF(hole_x, hole_y, hole_w, hole_h))
-
-                # Restore default compositing and draw the digit on top
-                painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
-                painter.setBrush(Qt.NoBrush)
-                painter.setPen(self._cage_sum_color)
                 tx = ox + tc * cell + 2
                 ty = oy + tr * cell + sum_font_size + 1
-                painter.drawText(QPointF(tx, ty), sum_text)
-
-        painter.setPen(pen)
+                painter.drawText(QPointF(tx, ty), str(cage.sum_value))
 
     def _draw_numbers(self, painter, ox, oy, cell):
         """Draw committed values and pencil marks."""
