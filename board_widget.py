@@ -590,19 +590,46 @@ class KillerSudokuBoard(QWidget):
         A clip region excludes the small bounding boxes of cage-sum digits
         so the dashes never visually cross the number, but leaves the solid
         grid underneath fully intact (no hole-punching).
+
+        Dash offset is chosen dynamically so that the visual gap between the
+        nearest solid edge and the nearest dash stroke is identical at thin
+        cell lines, thick 3x3 block lines, and the outer frame.  We draw
+        dashes by hand instead of relying on QPen's dash pattern so both
+        sides of every cage border see on-segments at the same distance
+        from the solid — no phase-luck making one side look closer.
         """
         if self._puzzle is None:
             return
 
-        offset = 2.5
+        # Desired visual gap between solid edge and the nearest dash stroke.
+        desired_gap = 1.5
+        # Separate anti-aliasing slack for thin vs thick strokes.  A 1.2px
+        # thick 3x3 line bleeds noticeably farther than a 1px cell line.
+        aa_thin = 0.7
+        aa_thick = 1.4
+
+        def _offset_for(solid_width, aa):
+            return desired_gap + solid_width / 2 + aa
+
+        thin_offset = _offset_for(self._grid_width, aa_thin)
+        thick_offset = _offset_for(self._block_width, aa_thick)
+
+        # Dash geometry — drawn by hand so we can guarantee that on-segments
+        # at +offset and -offset land at the same distance from the solid.
+        dash_len = 4.0
+        gap_len = 3.0
+        step = dash_len + gap_len
+
+        n = self._puzzle.size
+        block_rows = self._puzzle.num_rows_nonet or 3
+        block_cols = self._puzzle.num_cols_nonet or 3
 
         pen = QPen(self._cage_border_color, self._cage_border_width)
         pen.setCapStyle(Qt.FlatCap)
-        pen.setDashPattern(self._cage_dash_pattern)
         painter.setPen(pen)
 
         # Build clip: whole board minus every cage-sum bounding rect
-        from PySide6.QtGui import QRegion  # local import so the top list stays lean
+        from PySide6.QtGui import QRegion
 
         region = QRegion(self.rect())
         for hole in self._cage_sum_holes(ox, oy, cell):
@@ -610,38 +637,66 @@ class KillerSudokuBoard(QWidget):
         painter.setClipRegion(region)
 
         h_runs, v_runs = self._cage_border_runs()
-        n = self._puzzle.size
+
+        def _draw_hand_dash_seg(x0, y0, x1, y1):
+            """Draw a hand-tuned dashed segment that starts with an ON
+            segment right adjacent to (x0,y0).  This guarantees that both
+            flanks (+offset and -offset) of a cage border begin with an
+            on-segment at the same visual distance from the solid center.
+            """
+            if x0 == x1 and y0 == y1:
+                return
+            dx, dy = x1 - x0, y1 - y0
+            length = (dx * dx + dy * dy) ** 0.5
+            if length < 0.01:
+                return
+            ux, uy = dx / length, dy / length
+
+            pos = 0.0
+            while pos < length:
+                end = min(pos + dash_len, length)
+                px0 = x0 + ux * pos
+                py0 = y0 + uy * pos
+                px1 = x0 + ux * end
+                py1 = y0 + uy * end
+                painter.drawLine(QPointF(px0, py0), QPointF(px1, py1))
+                pos += step
 
         for r, spans in h_runs.items():
             y0 = oy + r * cell + 0.5
-            # External perimeter edges: only draw the side that points INTO
-            # the board interior.  Otherwise the "outside" offset lands on
-            # the widget background as an irrelevant stray line.
-            if r == 0:
-                offs = [offset]       # only below the top edge
-            elif r == n:
-                offs = [-offset]      # only above the bottom edge
+            if r == 0 or r == n or r % block_rows == 0:
+                off = thick_offset
             else:
-                offs = [-offset, offset]
+                off = thin_offset
+            if r == 0:
+                doffs = [off]
+            elif r == n:
+                doffs = [-off]
+            else:
+                doffs = [-off, off]
             for c0, c1 in spans:
                 x0 = ox + c0 * cell
                 x1 = ox + c1 * cell
-                for dy in offs:
-                    painter.drawLine(QPointF(x0, y0 + dy), QPointF(x1, y0 + dy))
+                for dy in doffs:
+                    _draw_hand_dash_seg(x0, y0 + dy, x1, y0 + dy)
 
         for c, spans in v_runs.items():
             x0 = ox + c * cell + 0.5
-            if c == 0:
-                offs = [offset]       # only right of the left edge
-            elif c == n:
-                offs = [-offset]      # only left of the right edge
+            if c == 0 or c == n or c % block_cols == 0:
+                off = thick_offset
             else:
-                offs = [-offset, offset]
+                off = thin_offset
+            if c == 0:
+                doffs = [off]
+            elif c == n:
+                doffs = [-off]
+            else:
+                doffs = [-off, off]
             for r0, r1 in spans:
                 y0 = oy + r0 * cell
                 y1 = oy + r1 * cell
-                for dx in offs:
-                    painter.drawLine(QPointF(x0 + dx, y0), QPointF(x0 + dx, y1))
+                for dx in doffs:
+                    _draw_hand_dash_seg(x0 + dx, y0, x0 + dx, y1)
 
         painter.setClipping(False)
 
