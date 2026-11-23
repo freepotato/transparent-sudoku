@@ -44,12 +44,17 @@ class KillerSudokuBoard(QWidget):
 
         # Visual settings
         self._bg_color = QColor(0, 0, 0, 0)  # fully transparent bg
-        self._cage_border_color = QColor(165, 165, 165, 190)
+        self._cage_border_color = QColor(145, 145, 145, 180)
         self._cage_border_width = 1.0
 
-        # Cell grid: only the 3x3 block separators and the outer frame are solid
-        self._block_color = QColor(110, 110, 110, 165)
-        self._block_width = 1.0
+        # Three tiers, matching the reference picture:
+        #   thick: outer frame + 3x3 block boundaries (dark, 1.2px solid)
+        #   thin:  cell edges inside a cage (medium gray, 1px solid)
+        #   dashed: cage borders (same gray as thin, 1px dashed)
+        self._grid_color = QColor(145, 145, 145, 180)
+        self._grid_width = 1.0
+        self._block_color = QColor(60, 60, 60, 230)
+        self._block_width = 1.2
         self._cage_dash_pattern = [4, 3]
         self._number_color = QColor(20, 20, 20, 255)
         self._fixed_number_color = QColor(20, 20, 20, 255)
@@ -469,26 +474,53 @@ class KillerSudokuBoard(QWidget):
         return [" ".join(str(d) for d in combo) for combo in combos] or ["—"]
 
     def _draw_grid(self, painter, ox, oy, cell):
-        """Solid lines: the outer frame and the 3x3 block separators only.
+        """Solid lines in two tiers, layered so cage dashes never overlap:
 
-        No thin lines between individual cells. Cell divisions come from the
-        dashed cage borders, exactly like the reference board, so solid and
-        dashed lines never overlap.
+        1. Thin lines between cells inside the same cage (never a cage border).
+        2. Thick lines on 3x3 block boundaries and the outer frame.
+
+        Because cage borders are only drawn between *different* cages, the thin
+        lines are strictly inside cages and the dashed cage borders never land
+        on them. Thick block lines already skip in the cage-border code, so all
+        three tiers (thin, thick, dash) are geometrically disjoint.
         """
         if self._puzzle is None:
             return
         n = self._puzzle.size
         block_rows = self._puzzle.num_rows_nonet or 3
         block_cols = self._puzzle.num_cols_nonet or 3
+        grid = self._puzzle.cage_grid
         side = n * cell
 
+        thin = QPen(self._grid_color, self._grid_width)
+        thin.setCapStyle(Qt.FlatCap)
         thick = QPen(self._block_color, self._block_width)
         thick.setCapStyle(Qt.FlatCap)
+
+        # ---- thin: same-cage cell edges ----
+        painter.setPen(thin)
+        for r in range(n):
+            y = oy + r * cell + 0.5
+            for c in range(1, n):
+                if c % block_cols == 0:
+                    continue  # 3x3 boundary drawn below as thick
+                if grid[r][c - 1] == grid[r][c]:
+                    painter.drawLine(QPointF(ox + c * cell, y),
+                                     QPointF(ox + c * cell, y + cell))
+
+        for c in range(n):
+            x = ox + c * cell + 0.5
+            for r in range(1, n):
+                if r % block_rows == 0:
+                    continue
+                if grid[r - 1][c] == grid[r][c]:
+                    painter.drawLine(QPointF(x, oy + r * cell),
+                                     QPointF(x + cell, oy + r * cell))
+
+        # ---- thick: 3x3 block separators ----
         painter.setPen(thick)
         painter.setBrush(Qt.NoBrush)
 
-        # Half-pixel alignment keeps 1px strokes crisp instead of blurring
-        # across two pixels.
         for r in range(1, n):
             if r % block_rows:
                 continue
@@ -501,8 +533,7 @@ class KillerSudokuBoard(QWidget):
             x = ox + c * cell + 0.5
             painter.drawLine(QPointF(x, oy), QPointF(x, oy + side))
 
-        # Outer frame: keep the whole stroke inside the widget so it is not
-        # clipped in half by the board edge.
+        # Outer frame
         painter.drawRect(QRectF(ox + 0.5, oy + 0.5, side - 1.0, side - 1.0))
 
     def _draw_cage_borders(self, painter, ox, oy, cell):
