@@ -637,9 +637,14 @@ class KillerSudokuBoard(QWidget):
         Unlike the solid grid, cage dashes run across 3x3 block boundaries
         and the outer frame too — every cage gets a complete dashed border
         regardless of where it sits in the grid.
+
+        External edges (row 0, row n, col 0, col n) are also included so a
+        cage that touches the board perimeter still has a dashed boundary
+        there — the outer frame solid line sits underneath it.
         """
         n = self._puzzle.size
         grid = self._puzzle.cage_grid
+        cages = self._puzzle.cages
 
         h_runs = {}
         for r in range(1, n):
@@ -647,11 +652,39 @@ class KillerSudokuBoard(QWidget):
             if edges:
                 h_runs[r] = self._merge_spans(edges)
 
+        # Top external boundary (r=0): cages that touch row 0
+        top_edges = []
+        for cage in cages:
+            top_edges.extend(c for (r, c) in cage.cells if r == 0)
+        if top_edges:
+            h_runs[0] = self._merge_spans(sorted(set(top_edges)))
+
+        # Bottom external boundary (r=n): cages that touch row n-1
+        bot_edges = []
+        for cage in cages:
+            bot_edges.extend(c for (r, c) in cage.cells if r == n - 1)
+        if bot_edges:
+            h_runs[n] = self._merge_spans(sorted(set(bot_edges)))
+
         v_runs = {}
         for c in range(1, n):
             edges = [r for r in range(n) if grid[r][c - 1] != grid[r][c]]
             if edges:
                 v_runs[c] = self._merge_spans(edges)
+
+        # Left external boundary (c=0): cages that touch col 0
+        left_edges = []
+        for cage in cages:
+            left_edges.extend(r for (r, c) in cage.cells if c == 0)
+        if left_edges:
+            v_runs[0] = self._merge_spans(sorted(set(left_edges)))
+
+        # Right external boundary (c=n): cages that touch col n-1
+        right_edges = []
+        for cage in cages:
+            right_edges.extend(r for (r, c) in cage.cells if c == n - 1)
+        if right_edges:
+            v_runs[n] = self._merge_spans(sorted(set(right_edges)))
 
         return h_runs, v_runs
 
