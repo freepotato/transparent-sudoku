@@ -474,22 +474,19 @@ class KillerSudokuBoard(QWidget):
         return [" ".join(str(d) for d in combo) for combo in combos] or ["—"]
 
     def _draw_grid(self, painter, ox, oy, cell):
-        """Solid lines in two tiers, layered so cage dashes never overlap:
+        """Solid cell grid in two tiers:
 
-        1. Thin lines between cells inside the same cage (never a cage border).
+        1. Thin lines between EVERY adjacent pair of cells (whether inside the
+           same cage or on a cage border).  Cage borders have their dashed
+           counterpart drawn alongside (offset) later so they are parallel,
+           not overlapping.
         2. Thick lines on 3x3 block boundaries and the outer frame.
-
-        Because cage borders are only drawn between *different* cages, the thin
-        lines are strictly inside cages and the dashed cage borders never land
-        on them. Thick block lines already skip in the cage-border code, so all
-        three tiers (thin, thick, dash) are geometrically disjoint.
         """
         if self._puzzle is None:
             return
         n = self._puzzle.size
         block_rows = self._puzzle.num_rows_nonet or 3
         block_cols = self._puzzle.num_cols_nonet or 3
-        grid = self._puzzle.cage_grid
         side = n * cell
 
         thin = QPen(self._grid_color, self._grid_width)
@@ -497,25 +494,23 @@ class KillerSudokuBoard(QWidget):
         thick = QPen(self._block_color, self._block_width)
         thick.setCapStyle(Qt.FlatCap)
 
-        # ---- thin: same-cage cell edges ----
+        # ---- thin: ALL cell edges except block boundaries ----
         painter.setPen(thin)
         for r in range(n):
             y = oy + r * cell + 0.5
             for c in range(1, n):
                 if c % block_cols == 0:
-                    continue  # 3x3 boundary drawn below as thick
-                if grid[r][c - 1] == grid[r][c]:
-                    painter.drawLine(QPointF(ox + c * cell, y),
-                                     QPointF(ox + c * cell, y + cell))
+                    continue
+                painter.drawLine(QPointF(ox + c * cell, y),
+                                 QPointF(ox + c * cell, y + cell))
 
         for c in range(n):
             x = ox + c * cell + 0.5
             for r in range(1, n):
                 if r % block_rows == 0:
                     continue
-                if grid[r - 1][c] == grid[r][c]:
-                    painter.drawLine(QPointF(x, oy + r * cell),
-                                     QPointF(x + cell, oy + r * cell))
+                painter.drawLine(QPointF(x, oy + r * cell),
+                                 QPointF(x + cell, oy + r * cell))
 
         # ---- thick: 3x3 block separators ----
         painter.setPen(thick)
@@ -533,18 +528,28 @@ class KillerSudokuBoard(QWidget):
             x = ox + c * cell + 0.5
             painter.drawLine(QPointF(x, oy), QPointF(x, oy + side))
 
-        # Outer frame
         painter.drawRect(QRectF(ox + 0.5, oy + 0.5, side - 1.0, side - 1.0))
 
     def _draw_cage_borders(self, painter, ox, oy, cell):
-        """Dashed cage borders.
+        """Dashed cage borders drawn PARALLEL to the thin solid cell grid.
 
-        Drawn only on plain cell edges: edges that sit on a 3x3 block boundary
-        or on the outer frame are already covered by the solid lines, so a
-        dash never lands on top of a solid stroke.
+        Every cell edge now has a thin solid line at the boundary itself
+        (see _draw_grid).  Cage borders run alongside that solid — two
+        dashed strokes, offset left/right (vertical) or above/below
+        (horizontal) by a small amount — so solid and dashed are never
+        painted on top of each other.
+
+        Edges that sit on a 3x3 block boundary or the outer frame are
+        already covered by the thick solid line; we skip them here so the
+        dashed cage border never competes visually with the thick block
+        separator.
         """
         if self._puzzle is None:
             return
+
+        # How far the dashed cage line sits from the thin solid cell line.
+        # 2px keeps them close without aliasing into a fat double stroke.
+        offset = 2.0
 
         pen = QPen(self._cage_border_color, self._cage_border_width)
         pen.setCapStyle(Qt.FlatCap)
@@ -553,19 +558,23 @@ class KillerSudokuBoard(QWidget):
 
         h_runs, v_runs = self._cage_border_runs()
 
-        # Half-pixel alignment matches the solid lines, so a dash stays crisp
-        # and stops cleanly at a block separator instead of bleeding into it.
+        # Horizontal cage borders: flanked above and below the thin solid
         for r, spans in h_runs.items():
-            y = oy + r * cell + 0.5
+            y0 = oy + r * cell + 0.5
             for c0, c1 in spans:
-                painter.drawLine(QPointF(ox + c0 * cell, y),
-                                 QPointF(ox + c1 * cell, y))
+                x0 = ox + c0 * cell
+                x1 = ox + c1 * cell
+                painter.drawLine(QPointF(x0, y0 - offset), QPointF(x1, y0 - offset))
+                painter.drawLine(QPointF(x0, y0 + offset), QPointF(x1, y0 + offset))
 
+        # Vertical cage borders: flanked left and right
         for c, spans in v_runs.items():
-            x = ox + c * cell + 0.5
+            x0 = ox + c * cell + 0.5
             for r0, r1 in spans:
-                painter.drawLine(QPointF(x, oy + r0 * cell),
-                                 QPointF(x, oy + r1 * cell))
+                y0 = oy + r0 * cell
+                y1 = oy + r1 * cell
+                painter.drawLine(QPointF(x0 - offset, y0), QPointF(x0 - offset, y1))
+                painter.drawLine(QPointF(x0 + offset, y0), QPointF(x0 + offset, y1))
 
     def _cage_border_runs(self):
         """Cage edges grouped into continuous runs.
