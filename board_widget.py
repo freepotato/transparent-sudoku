@@ -610,22 +610,38 @@ class KillerSudokuBoard(QWidget):
         painter.setClipRegion(region)
 
         h_runs, v_runs = self._cage_border_runs()
+        n = self._puzzle.size
 
         for r, spans in h_runs.items():
             y0 = oy + r * cell + 0.5
+            # External perimeter edges: only draw the side that points INTO
+            # the board interior.  Otherwise the "outside" offset lands on
+            # the widget background as an irrelevant stray line.
+            if r == 0:
+                offs = [offset]       # only below the top edge
+            elif r == n:
+                offs = [-offset]      # only above the bottom edge
+            else:
+                offs = [-offset, offset]
             for c0, c1 in spans:
                 x0 = ox + c0 * cell
                 x1 = ox + c1 * cell
-                painter.drawLine(QPointF(x0, y0 - offset), QPointF(x1, y0 - offset))
-                painter.drawLine(QPointF(x0, y0 + offset), QPointF(x1, y0 + offset))
+                for dy in offs:
+                    painter.drawLine(QPointF(x0, y0 + dy), QPointF(x1, y0 + dy))
 
         for c, spans in v_runs.items():
             x0 = ox + c * cell + 0.5
+            if c == 0:
+                offs = [offset]       # only right of the left edge
+            elif c == n:
+                offs = [-offset]      # only left of the right edge
+            else:
+                offs = [-offset, offset]
             for r0, r1 in spans:
                 y0 = oy + r0 * cell
                 y1 = oy + r1 * cell
-                painter.drawLine(QPointF(x0 - offset, y0), QPointF(x0 - offset, y1))
-                painter.drawLine(QPointF(x0 + offset, y0), QPointF(x0 + offset, y1))
+                for dx in offs:
+                    painter.drawLine(QPointF(x0 + dx, y0), QPointF(x0 + dx, y1))
 
         painter.setClipping(False)
 
